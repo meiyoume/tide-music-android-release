@@ -1,0 +1,14 @@
+node_modules/
+.gradle/
+build/
+local.properties
+android/app/build/
+android/keystore.properties
+*.keystore
+*.jks
+*.apk
+*.apks
+*.aab
+*.log
+shots/
+build-staging/

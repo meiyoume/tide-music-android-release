@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!--
+    潮汐音乐的应用图标（源文件，与桌面版 _icon/icon.svg 同一套几何）。
+    青蓝渐变圆角方 + 白色音符 + 底部一道浪 —— 音符是「音乐」，浪是「潮汐」。
+
+    改这里之后跑 tools/icon/make-android-icons.py 重新生成 Android 的 mipmap PNG，
+    自适应图标（Android 8+）用的矢量在 res/drawable/ic_launcher_foreground.xml，
+    两边的几何要一起改（脚本会打印安全区换算用的缩放/位移）。
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0.05" y1="0" x2="0.95" y2="1">
+      <stop offset="0%" stop-color="#1ad39c"/>
+      <stop offset="55%" stop-color="#15b7ae"/>
+      <stop offset="100%" stop-color="#0e93e6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <g transform="translate(76,52) scale(15)">
+    <path d="M9 18V5l12-2v13" fill="none" stroke="#fff" stroke-width="2.7"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="6" cy="18" r="3.2" fill="#fff"/>
+    <circle cx="18" cy="16" r="3.2" fill="#fff"/>
+  </g>
+  <path d="M44 436c 52 -42 104 -42 156 0s 104 42 156 0s 52 -42 104 0"
+        fill="none" stroke="#fff" stroke-width="32" stroke-linecap="round" opacity=".9"/>
+</svg>

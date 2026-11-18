@@ -1,0 +1,19 @@
+<resources>
+    <!--
+      启动窗口的底色（浅色模式）。
+
+      AppTheme 继承的是 DayNight，所以这个颜色要跟着系统深浅色走：
+      系统浅色时启动窗口是浅的，系统深色时是深的（见 values-night/colors.xml）。
+      以前这里钉死成深色 #0A0B0F，系统浅色 + 界面浅色的用户每次打开都会
+      「深色闪一下再变浅」——实测启动录帧里就是这一下。
+
+      钉死深色的初衷是防「白闪」（注释原文：默认深色界面在浅色系统下会被系统
+      画成近白底），但那只有界面主题和系统不一致时才会发生，属于少数情况；
+      而主题跟系统走的用户是多数，他们为此每次都吃一次闪屏，不划算。
+
+      真正剩下的不一致只有一种：用户在深色系统里手动选了浅色（或反之）。
+      那种情况静态资源无法预知，只能由 MainActivity 在 onCreate 里读
+      SharedPreferences 覆盖 —— 见 TidePrefs 与 MainActivity.applyBootBackground。
+    -->
+    <color name="tide_boot_bg">#F4F5F8</color>
+</resources>

@@ -1,0 +1,34 @@
+// 国内镜像加速：阿里云在前，官方源兜底
+// 通过 gradlew -I init-mirror.gradle 使用
+
+def mirrors = [
+  'https://maven.aliyun.com/repository/google',
+  'https://maven.aliyun.com/repository/public',
+  'https://maven.aliyun.com/repository/gradle-plugin',
+]
+
+allprojects { p ->
+  p.buildscript {
+    repositories {
+      mirrors.each { m -> maven { url m; allowInsecureProtocol = false } }
+      google()
+      mavenCentral()
+    }
+  }
+  p.repositories {
+    mirrors.each { m -> maven { url m; allowInsecureProtocol = false } }
+    google()
+    mavenCentral()
+  }
+}
+
+settingsEvaluated { s ->
+  s.pluginManagement {
+    repositories {
+      mirrors.each { m -> maven { url m } }
+      gradlePluginPortal()
+      google()
+      mavenCentral()
+    }
+  }
+}

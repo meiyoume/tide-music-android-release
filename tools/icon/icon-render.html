@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>icon render</title>
+<!--
+  把一个 SVG 按指定尺寸画在页面左上角，供无头 Edge 截图后再裁剪/缩放。
+  为什么要绕这一圈：Pillow 不会渲染 SVG，而无头 Edge 的窗口有最小宽度，
+  小尺寸（48px）截不出来 —— 所以统一先出大图，再用 Pillow 缩。
+  用法：?svg=tide-icon.svg&size=1024
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  img { display: block; }
+</style>
+<img id="i">
+<script>
+  var q = new URLSearchParams(location.search);
+  var size = Number(q.get('size') || 512);
+  var img = document.getElementById('i');
+  img.src = q.get('svg');
+  img.width = size;
+  img.height = size;
+</script>

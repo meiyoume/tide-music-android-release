@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（Android 8+）的底色：潮汐的青蓝渐变，铺满 108dp 画布。
+
+  渐变方向和色标跟 tools/icon/tide-icon.svg 里的 `<linearGradient id="bg">` 一致
+  （x1=.05,y1=0 → x2=.95,y2=1，0% #1ad39c / 55% #15b7ae / 100% #0e93e6），
+  换算到 108 视口就是 (5.4,0) → (102.6,108)。
+
+  改图标请跑 tools/icon/make-android-icons.py，它会把 mipmap 那 10 张 PNG 一起重出。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+  <path android:pathData="M0,0h108v108h-108z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+          android:type="linear"
+          android:startX="5.4" android:startY="0"
+          android:endX="102.6" android:endY="108">
+        <item android:offset="0" android:color="#FF1AD39C"/>
+        <item android:offset="0.55" android:color="#FF15B7AE"/>
+        <item android:offset="1" android:color="#FF0E93E6"/>
+      </gradient>
+    </aapt:attr>
+  </path>
+</vector>

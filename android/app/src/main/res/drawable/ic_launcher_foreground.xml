@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（Android 8+）的前景：**只有白色音符**（跟桌面版 _icon/icon.svg 的同一套几何）。
+
+  为什么没有那道浪：自适应图标保证可见的区域只有中心 66dp 的圆，浪的两端在
+  512 视口里落在半径约 185 处（安全区只有 156.4），圆形蒙版会把它切掉两个头。
+  浪留在方版位图里（mipmap-*/ic_launcher.png，那里没有蒙版），自适应图标用音符。
+
+  ★ 坐标系的坑：这个文件的 viewportWidth 是 **512**，会被映射到 108dp 画布上，
+    所以「居中到 54dp」这件事**必须换算到 512 视口里做**（1 视口单位 = 108/512 dp）。
+    第一版把 108 画布里的位移直接写进 512 坐标系，音符被缩到左上角 17dp 的角落里，
+    真机上只剩一个渐变圆 —— 模拟图没发现，是因为模拟图的 viewBox 用了 108，
+    两边根本不是同一个空间。**模拟图的 viewBox 和 group 必须跟这里逐字一致。**
+
+  换算（改几何时照这个重算）：
+    音符在 512 空间里的包围盒 x 118..411.25 / y 76.75..370（含描边与圆头），
+    中心 (264.625, 223.375)，边长 293.25；
+    安全区半径 33dp = 33 / (108/512) = 156.4 视口单位；
+    离中心最远的墨点是琴梁右上角 (411.25, 76.75)，距中心 207.3 —— 由它决定缩放：
+      scale = 156.4 / 207.3 = 0.7545
+      translateX = 256 - 264.625*0.7545 = 56.34
+      translateY = 256 - 223.375*0.7545 = 87.46
+    这样音符占 221 视口单位 ≈ 46.7dp 见方，且任何墨点都不出安全圆。
+
+  底下的 group(76,52) scale(15) 是把 24 视口的音符路径搬到 512 空间，与 tide-icon.svg 一致。
+
+  原版洛雪是「白底 + 绿音符」，这里换成潮汐的「青蓝渐变 + 白音符」，
+  桌面上一眼能跟原版分开（同名同图标会被部分安装器提示「已有该应用」）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+  <group
+      android:translateX="56.34"
+      android:translateY="87.46"
+      android:scaleX="0.7545"
+      android:scaleY="0.7545">
+    <group
+        android:translateX="76"
+        android:translateY="52"
+        android:scaleX="15"
+        android:scaleY="15">
+      <path
+          android:pathData="M9,18 L9,5 L21,3 L21,16"
+          android:fillColor="#00000000"
+          android:strokeColor="#FFFFFF"
+          android:strokeWidth="2.7"
+          android:strokeLineCap="round"
+          android:strokeLineJoin="round"/>
+      <path
+          android:pathData="M6,18 m-3.2,0 a3.2,3.2 0 1,0 6.4,0 a3.2,3.2 0 1,0 -6.4,0"
+          android:fillColor="#FFFFFF"/>
+      <path
+          android:pathData="M18,16 m-3.2,0 a3.2,3.2 0 1,0 6.4,0 a3.2,3.2 0 1,0 -6.4,0"
+          android:fillColor="#FFFFFF"/>
+    </group>
+  </group>
+</vector>

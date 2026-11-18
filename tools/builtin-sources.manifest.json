@@ -1,0 +1,35 @@
+{
+  "_comment": "内置音源清单。path 是仓库内自带的脚本原文（tools/builtin-sources-src/），covered 是 2026-10-07 串行实测真正可播的平台。改完跑 node tools/gen-builtin-sources.mjs 生成 src/harmony/builtinSources/scripts/。",
+  "sources": [
+    {
+      "slug": "hyw_beta",
+      "path": "tools/builtin-sources-src/hyw_beta.js",
+      "note": "默认源：五个平台全覆盖，tx 走 QQ 官方 CDN（isure6.stream.qqmusic.qq.com）且是完整曲目",
+      "covered": "kw/kg/tx/wy/mg"
+    },
+    {
+      "slug": "xinghai",
+      "path": "tools/builtin-sources-src/xinghai.js",
+      "note": "kw/kg/wy/mg 全走各平台官方 CDN、体积与正版 320k 一致，最快（0.3~0.9s）；tx 失败",
+      "covered": "kw/kg/wy/mg"
+    },
+    {
+      "slug": "lxynx",
+      "path": "tools/builtin-sources-src/lxynx.js",
+      "note": "同星海，另一套后端（互为备份）；tx 失败",
+      "covered": "kw/kg/wy/mg"
+    },
+    {
+      "slug": "helloworld",
+      "path": "tools/builtin-sources-src/helloworld.js",
+      "note": "tx/wy/mg 走官方 CDN，给 tx 留第二个真源",
+      "covered": "tx/wy/mg"
+    },
+    {
+      "slug": "yuxi",
+      "path": "tools/builtin-sources-src/yuxi.js",
+      "note": "五平台全覆盖，机制是「本平台失败就换平台搜同名曲」；最快的一组之一",
+      "covered": "kw/kg/tx/wy/mg"
+    }
+  ]
+}

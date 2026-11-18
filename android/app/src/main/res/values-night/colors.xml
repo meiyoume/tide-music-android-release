@@ -1,0 +1,7 @@
+<resources>
+    <!--
+      启动窗口的底色（深色模式）。
+      取值与界面深色主题的背景色一致（styles.css 里 html[data-theme="dark"] 的 bg 变量）。
+    -->
+    <color name="tide_boot_bg">#0A0B0F</color>
+</resources>

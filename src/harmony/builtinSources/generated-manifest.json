@@ -1,0 +1,70 @@
+[
+  {
+    "slug": "hyw_beta",
+    "meta": {
+      "name": "HYWmusic_beta_公益测试",
+      "version": "v0.74.0",
+      "author": "Ryn",
+      "description": "你知道吗我的trae积分用完了……我想要赞助喵……",
+      "homepage": "https://github.com/Macrohard0001/HYWmusic_source",
+      "license": "MIT",
+      "updateUrl": "http://103.79.184.97/api/releases?script=HYWmusic_beta_%E5%85%AC%E7%9B%8A%E6%B5%8B%E8%AF%95&scriptType=free&releaseType=lx&version=v0.74.0"
+    },
+    "note": "默认源：五个平台全覆盖，tx 走 QQ 官方 CDN（isure6.stream.qqmusic.qq.com）且是完整曲目",
+    "size": 8345,
+    "covered": "kw/kg/tx/wy/mg"
+  },
+  {
+    "slug": "xinghai",
+    "meta": {
+      "name": "星海音乐源",
+      "description": "GDAPI | 聚合 | ChKSz API | 全平台支持 24bit FLAC，网易、酷狗、QQ 最高支持母带",
+      "version": "v3.2.15",
+      "author": "万去了了 / 科学大魔王",
+      "homepage": "https://zddyr.top/",
+      "see": "http://gc.kxwa.top/",
+      "lastUpdate": "2026-10-02",
+      "update": "1. 新增汽水音乐支持（测试）；2. 感谢科学大魔王的技术支持；3. 国庆快乐",
+      "license": "仅供学习交流，请支持正版"
+    },
+    "note": "kw/kg/wy/mg 全走各平台官方 CDN、体积与正版 320k 一致，最快（0.3~0.9s）；tx 失败",
+    "size": 38920,
+    "covered": "kw/kg/wy/mg"
+  },
+  {
+    "slug": "lxynx",
+    "meta": {
+      "name": "lx-玉宁熙-Pro",
+      "description": "不出意外的话 最后一版 有缘再见",
+      "version": "v1.2.2",
+      "author": "ynx(2363768762)"
+    },
+    "note": "同星海，另一套后端（互为备份）；tx 失败",
+    "size": 146895,
+    "covered": "kw/kg/wy/mg"
+  },
+  {
+    "slug": "helloworld",
+    "meta": {
+      "name": "𝖧౿ᥣᥣ𝗈 Ԝ𝗈𝗋ᥣᑯ",
+      "author": "hello world",
+      "version": "260809",
+      "description": "缝合怪,轻点喷"
+    },
+    "note": "tx/wy/mg 走官方 CDN，给 tx 留第二个真源",
+    "size": 21152,
+    "covered": "tx/wy/mg"
+  },
+  {
+    "slug": "yuxi",
+    "meta": {
+      "name": "屿溪-终章",
+      "description": "山水两相离，此篇至终章",
+      "version": "0.0.0",
+      "author": "屿溪"
+    },
+    "note": "五平台全覆盖，机制是「本平台失败就换平台搜同名曲」；最快的一组之一",
+    "size": 127816,
+    "covered": "kw/kg/tx/wy/mg"
+  }
+]
