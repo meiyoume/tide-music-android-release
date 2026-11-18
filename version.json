@@ -1,0 +1,38 @@
+{
+  "version": "1.9.33",
+  "notes": "2026-11-18 · 国内更新源加固：更新改为 manifest 驱动，下载地址全在 version.json 里、以后换源不用发新版；manifest 与 APK 都走多镜像并校验 SHA256；下载失败弹窗新增「打开网页手动下载」兜底。",
+  "history": [
+    {
+      "version": "1.9.32",
+      "notes": "应用内更新 + 自己的 Release 仓库：「我的 → 关于」显示真实版本并检查更新，可直接下载安装；平板按 applicationId 自动挑 Pad 包。"
+    },
+    {
+      "version": "1.9.31",
+      "notes": "冷启动提速：内核初始化拆首屏/后台两段，Web 资源压缩 386→271KB，脚本改 head+defer。同会话 A/B 首帧 2733→1353ms。"
+    },
+    {
+      "version": "1.9.30",
+      "notes": "修复播放页拖动进度条卡顿/延迟：拖拽期间不再被内核进度事件拽回，松手乐观显示 + seekHold 防回弹。"
+    }
+  ],
+  "apk": {
+    "phone": {
+      "url": "https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-v1.9.33-arm64.apk",
+      "mirrors": [
+        "https://ghproxy.net/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-v1.9.33-arm64.apk",
+        "https://gh-proxy.com/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-v1.9.33-arm64.apk"
+      ],
+      "sha256": "c8465dec37b3103c58e179bc57f350b38924854100f19ef3651dd7de42fd8f97",
+      "size": 15010680
+    },
+    "tablet": {
+      "url": "https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-Pad-v1.9.33-arm64.apk",
+      "mirrors": [
+        "https://ghproxy.net/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-Pad-v1.9.33-arm64.apk",
+        "https://gh-proxy.com/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-Pad-v1.9.33-arm64.apk"
+      ],
+      "sha256": "5f12ea3d55a863d954abd3cd5d9346344c81341cf553a2c26e0105fecffc85d2",
+      "size": 15010691
+    }
+  }
+}
