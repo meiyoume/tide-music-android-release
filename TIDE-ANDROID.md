@@ -1926,6 +1926,9 @@ manifest 7/7 源全部命中（网络没问题）；把 catch 到的 message 临
   单源 8 秒超时（RN fetch 默认**没有**超时，被黑洞的源能挂到系统 TCP 超时）；
 - 收集所有成功响应后取**版本号最高**的一份，防止某个 CDN 缓存旧 manifest；
 - APK 下载镜像新增 `ghfast.top`，仍逐源测速择优 + size/sha256 校验。
+- 发版后调一次 `https://purge.jsdelivr.net/gh/meiyoume/tide-music-android-release@main/version.json`；
+  注意它返回 `finished` 后 **fastly/gcore 节点仍可能吐旧内容**（cdn 才立刻新），
+  所以客户端「取版本号最高」是必需的兜底，不是可选优化。
 
 设备实测（x86_64 模拟器，真实网络）：同一台机器上 1.9.35 点「检查更新」立即「检查失败」，
 1.9.36 显示「已是最新」。
