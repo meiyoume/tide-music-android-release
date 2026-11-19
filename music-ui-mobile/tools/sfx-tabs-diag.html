@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sfx tab diag</title>
+<!--
+  查「点了界面音效页签，内容换了但页签高亮没跟着走」。
+  用法: python tools/probe-run.py sfx-tabs-diag.html
+-->
+<style>html,body{margin:0;height:100%;background:#06070A}iframe{display:block;border:0;width:100%;height:100%}</style>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+(function () {
+  var out = [];
+  function send(t) { try { fetch('/result', { method: 'POST', body: t }); } catch (e) {} }
+  document.getElementById('app').addEventListener('load', function () {
+    var doc = this.contentDocument;
+    var q = function (s) { return doc.querySelector(s); };
+    var qa = function (s) { return [].slice.call(doc.querySelectorAll(s)); };
+
+    function dump(label) {
+      out.push('—— ' + label);
+      out.push('  页签: ' + qa('[data-sfx-tab]').map(function (b) {
+        return b.dataset.sfxTab + '[cls=' + b.className + ']';
+      }).join('  '));
+      out.push('  面板: ' + qa('[data-sfx-pane]').map(function (p) {
+        var cs = doc.defaultView.getComputedStyle(p);
+        return p.dataset.sfxPane + '{hidden=' + p.hidden + ' display=' + cs.display +
+          ' h=' + Math.round(p.getBoundingClientRect().height) + '}';
+      }).join('  '));
+      var body = q('#sfxSheet .sheet__body');
+      out.push('  弹层体 scrollTop=' + body.scrollTop + ' scrollH=' + body.scrollHeight +
+        ' clientH=' + body.clientHeight);
+    }
+
+    setTimeout(function () {
+      q('#listLikes [data-token]').click();
+      setTimeout(function () {
+        q('#miniTap').click();
+        setTimeout(function () {
+          q('#pSfx').click();
+          setTimeout(function () {
+            dump('刚打开弹层');
+            q('[data-sfx-tab="ui"]').click();
+            setTimeout(function () {
+              dump('点了「界面音效」之后');
+              q('[data-sfx-tab="play"]').click();
+              setTimeout(function () {
+                dump('又点回「播放音效」');
+                send(out.join('\n'));
+              }, 400);
+            }, 400);
+          }, 900);
+        }, 800);
+      }, 700);
+    }, 1500);
+  });
+})();
+</script>

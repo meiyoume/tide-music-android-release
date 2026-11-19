@@ -5,6 +5,8 @@
 界面只负责显示与控制。
 
 - 界面工程（可独立预览）：`C:\Users\meiyou\.zcode\workspace\default\music-ui-mobile\`
+  （**仓库里有同一份源码**，见 `music-ui-mobile/`；`tools/sync-tide-assets.mjs` 把
+  `index.html/styles.css/app.js/api.js/sfx.js` 压缩后拷进 `android/app/src/main/assets/tide/`）
 - 本工程内的落点：`src/tide/`（桥接）+ `android/app/src/main/assets/tide/`（界面资源）
 
 ---

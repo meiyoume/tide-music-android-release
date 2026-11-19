@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>playfx layout probe</title>
+<!--
+  量「播放音效」面板在两个入口（设置页 / 播放页弹层）里有没有东西跑出视口右边，
+  以及内边距是不是一致。
+  用法: python tools/probe-run.py playfx-probe.html
+-->
+<style>html,body{margin:0;height:100%;background:#06070A}iframe{display:block;border:0;width:100%;height:100%}</style>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+(function () {
+  var out = [];
+  function send(t) { try { fetch('/result', { method: 'POST', body: t }); } catch (e) {} }
+  function desc(el) {
+    var s = el.tagName.toLowerCase();
+    if (el.id) s += '#' + el.id;
+    if (el.className && typeof el.className === 'string') s += '.' + el.className.trim().split(/\s+/).join('.');
+    var d = el.getAttribute('data-pf-preset');
+    if (d !== null) s += '[preset=' + d + ']';
+    return s;
+  }
+  document.getElementById('app').addEventListener('load', function () {
+    var doc = this.contentDocument, win = this.contentWindow;
+    var q = function (s) { return doc.querySelector(s); };
+
+    function measure(scope, label) {
+      var root = q(scope);
+      if (!root) { out.push('缺失  ' + label + '  ' + scope); return; }
+      out.push('== ' + label + '（' + scope + '）');
+      var bad = [];
+      var all = root.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var r = all[i].getBoundingClientRect();
+        if (r.right - win.innerWidth > 1) bad.push(desc(all[i]) + ' right=' + Math.round(r.right));
+      }
+      out.push('  超出视口的元素: ' + bad.length + (bad.length ? '\n    ' + bad.slice(0, 8).join('\n    ') : ''));
+      /* 左内边距：行文字 vs 分组标签 vs 第一个 chip，三者应该对齐 */
+      function leftOf(sel) {
+        var el = root.querySelector(sel);
+        return el ? Math.round(el.getBoundingClientRect().left) : -1;
+      }
+      out.push('  左边界 启用行文字=' + leftOf('[data-pf-switch]') +
+        '  分组标签=' + leftOf('.pf-group .s-group__label') +
+        '  分组页签=' + leftOf('[data-pf-groups]') +
+        '  第一个预设 chip=' + leftOf('[data-pf-presets] .chip') +
+        '  滑块=' + leftOf('[data-pf-range]') +
+        '  混响 chip=' + leftOf('[data-pf-reverbs] .chip') +
+        '  落款=' + leftOf('[data-pf-credit]'));
+      /* 高度：面板内容 vs 容器可视高，判断要不要滚 */
+      var box = root.querySelector('[data-playfx]') || root;
+      var scroller = root.querySelector('.scroll') || root.querySelector('.sheet__body') || root;
+      out.push('  内容高=' + box.scrollHeight + '  可视高=' + Math.round(scroller.getBoundingClientRect().height) +
+        '  可滚=' + (scroller.scrollHeight > scroller.clientHeight + 2));
+    }
+
+    setTimeout(function () {
+      out.push('视口 ' + win.innerWidth + 'x' + win.innerHeight +
+        '  doc.scrollWidth=' + doc.documentElement.scrollWidth);
+      /* 设置页偏好那两行：标题 + 摘要（摘要要跟着选中的预设走） */
+      function rows(label) {
+        var pfRow = q('[data-push="scr-set-playfx"]');
+        var uiRow = q('[data-push="scr-set-sfx"]');
+        out.push('== 设置页那两行（' + label + '）');
+        out.push('  播放音效行: ' + (pfRow ? pfRow.querySelector('.s-row__title').textContent +
+          ' / ' + pfRow.querySelector('.s-row__desc').textContent : '缺失'));
+        out.push('  界面音效行: ' + (uiRow ? uiRow.querySelector('.s-row__title').textContent +
+          ' / ' + uiRow.querySelector('.s-row__desc').textContent : '缺失'));
+      }
+      q('[data-push="scr-set-playfx"]').click();
+      setTimeout(function () {
+        measure('#scr-set-playfx', '设置页');
+        q('#scr-set-playfx [data-pop]').click();
+        setTimeout(function () {
+          rows('还没选预设');
+          q('[data-push="scr-set-playfx"]').click();
+          setTimeout(function () {
+            q('#scr-set-playfx [data-pf-group="vlc"]').click();
+            setTimeout(function () {
+              q('#scr-set-playfx [data-pf-preset="14"]').click();
+              setTimeout(function () {
+                out.push('  选中「重低音」后弹层里显示: ' +
+                  q('#scr-set-playfx [data-pf-state]').textContent +
+                  '  选中 chip=' + (q('#scr-set-playfx [data-pf-preset="14"]').className));
+                q('#scr-set-playfx [data-pop]').click();
+                setTimeout(function () {
+                  rows('选了「重低音」之后');
+                  send(out.join('\n'));
+                }, 600);
+              }, 800);
+            }, 500);
+          }, 800);
+        }, 500);
+      }, 1400);
+    }, 1600);
+  });
+})();
+</script>

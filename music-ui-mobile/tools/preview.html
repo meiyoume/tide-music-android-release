@@ -1,0 +1,114 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tide preview driver</title>
+<!--
+  独立预览用的「驱动页」：把 index.html 装进同源 iframe，按 URL 参数点一下页签或入口，
+  这样无头浏览器一次截图就能看到某个页面的样子，不用真机跑一轮构建。
+
+  http://127.0.0.1:8777/tools/preview.html?tab=fav
+  http://127.0.0.1:8777/tools/preview.html?push=scr-search
+
+  要走到「点几下才到得了」的界面（比如播放页里的音效弹层），用 clicks：
+  ?clicks=%23listLikes%20[data-token]|%23miniTap|%23pSfx&gap=700
+  （clicks 用 | 分隔，gap 是每步之间等多少毫秒，默认 600）
+
+  要在搜索框里打字（看联想列表），用 type：
+  ?clicks=%5Bdata-push=%22scr-search%22%5D&type=zhou&gap=800
+  （type 默认在 clicks 跑完之后执行：填进 #searchInput 并派发 input 事件。
+    要反过来 —— 先打字、再点联想词 —— 加 typefirst=1）
+
+  只在开发预览时用，不进 APK（sync 脚本只拷 index.html / styles.css / sfx.js / api.js / app.js）。
+-->
+<script>
+  /* 截图/走查用：在 iframe 加载 index.html 之前，先把主题与皮肤写进 localStorage。
+     必须同步执行在 iframe 之前，否则界面已经按旧偏好在跑了。
+     例：preview.html?theme=light&skin=dune&w=411&h=914 */
+  (function () {
+    var q = new URLSearchParams(location.search);
+    try {
+      if (q.get('theme')) localStorage.setItem('tide.theme', JSON.stringify(q.get('theme')));
+      if (q.get('skin')) localStorage.setItem('tide.skin', JSON.stringify(q.get('skin')));
+      /* 强调色是单独存的（applySkin 默认不覆盖它），换肤预览要一起给 */
+      if (q.get('accent')) localStorage.setItem('tide.accent', JSON.stringify(q.get('accent')));
+    } catch (e) {}
+  })();
+</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #06070A; }
+  iframe { display: block; border: 0; width: 100%; height: 100%; }
+</style>
+<iframe id="app" src="../index.html?pv=3"></iframe>
+<script>
+  var q = new URLSearchParams(location.search);
+  var tab = q.get('tab');
+  var push = q.get('push');
+  var clicks = q.get('clicks');
+  var type = q.get('type');
+  var typeFirst = !!q.get('typefirst');
+  var gap = Number(q.get('gap') || 600);
+  var delay = Number(q.get('delay') || 1600);
+  /* 无头 Edge 的窗口有个最小宽度（约 500），想看 411 这种真机宽度时，
+     用 w/h 把 iframe 钉成手机尺寸，外面留黑边 —— 否则截图右侧会被裁掉。 */
+  var w = q.get('w'), h = q.get('h');
+  var frame = document.getElementById('app');
+  if (w) frame.style.width = w + 'px';
+  if (h) frame.style.height = h + 'px';
+  document.body.style.display = 'grid';
+  document.body.style.placeItems = 'center';
+
+  frame.addEventListener('load', function () {
+    /* 刚创建的空 iframe 也会触发一次 load；只处理真正的 index.html */
+    if (this.contentWindow.location.href.indexOf('index.html') === -1) return;
+    var doc = this.contentDocument;
+    var win = this.contentWindow;
+    /* 截图用：跳过启动淡入，免得无头浏览器恰好停在 opacity 过渡中间 */
+    if (q.get('noboot')) {
+      doc.documentElement.classList.remove('is-boot');
+      /* 截图用：把动效一并关掉（no-motion 是全站已有的开关）。
+         无头 Edge 的虚拟时间不推进 opacity 类的合成动画，带 delay 的入场动画
+         会停在 opacity:0 —— 播放页右侧的进度条/控件就这样整块消失过。 */
+      doc.documentElement.classList.add('no-motion');
+      /* content-visibility:auto 的列表在无头截图里会整块不画（抽屉里的队列就是
+         这样变白板的）—— 截图时关掉，别把它当成真机上的空白页 */
+      var st = doc.createElement('style');
+      st.textContent = '.song,.hot,.s-row{content-visibility:visible!important}';
+      doc.head.appendChild(st);
+      var appEl = doc.querySelector('.app');
+      if (appEl) appEl.style.transition = 'none';
+      /* 探针/截图时别让播放页的滑入过渡卡在起点 */
+      var plEl = doc.querySelector('#player');
+      if (plEl) plEl.style.transition = 'none';
+    }
+    function typeInto() {
+      if (!type) return;
+      var inp = doc.querySelector('#searchInput');
+      if (!inp) return;
+      inp.value = type;
+      inp.dispatchEvent(new win.Event('input', { bubbles: true }));
+    }
+    setTimeout(function () {
+      if (typeFirst) typeInto();
+      if (clicks) {
+        var list = clicks.split('|');
+        var i = 0;
+        (function step() {
+          if (i >= list.length) {
+            if (!typeFirst) typeInto();
+            return;
+          }
+          var node = doc.querySelector(list[i++]);
+          if (node) node.click();
+          setTimeout(step, gap);
+        })();
+        return;
+      }
+      var el = null;
+      if (tab) el = doc.querySelector('.tab[data-tab-go="' + tab + '"]');
+      if (!el && push) el = doc.querySelector('[data-push="' + push + '"]');
+      if (!el && tab) el = doc.querySelector('[data-tab-go="' + tab + '"]');
+      if (el) el.click();
+      if (!typeFirst) typeInto();
+    }, delay);
+  });
+
+</script>

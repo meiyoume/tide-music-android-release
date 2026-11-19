@@ -1,0 +1,1038 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tide UI walkthrough</title>
+<!--
+  在预览（mock 后端）里按真实用户路径走一遍，把「点了应该发生什么」变成断言。
+  跑法：python tools/ui-check.py
+
+  为什么要有它：手点一遍只能证明「刚才那一下好使」，改完别的又不敢确定。
+  这里把每一步的**可见结果**（class / 文字 / 计算样式）记下来，回归时一眼能看出是哪一步坏的。
+-->
+<style>html,body{margin:0;height:100%;background:#06070A}iframe{display:block;border:0;width:100%;height:100%}</style>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+(function () {
+  var out = [];
+  var failed = 0;
+  /* 进度条那几步的目标比例：按当前歌的实际时长算（见进度条那一段的说明） */
+  var expectRatio = 0.25;
+  /* 音源页那一段换到哪个源（跨 .then 用，所以放在外面） */
+  var pickedSrc = '', pickedName = '';
+  /* 添加音源页那一段：进来时已装几个、以及选中要删的那个 id */
+  var addBefore = 0, delId = null;
+  /* 原生调色板那一段：启动时推的那一组（跨 .then 用） */
+  var sentPalette = null;
+
+  function send(text) {
+    try { fetch('/result', { method: 'POST', body: text }); } catch (e) {}
+  }
+  function ok(name, cond, extra) {
+    if (!cond) failed++;
+    out.push((cond ? 'PASS  ' : 'FAIL  ') + name + (extra ? '  [' + extra + ']' : ''));
+  }
+  function info(name) { out.push('----  ' + name); }
+
+  var frame = document.getElementById('app');
+  frame.addEventListener('load', function () {
+    var doc = frame.contentDocument;
+    var win = frame.contentWindow;
+    var q = function (s) { return doc.querySelector(s); };
+    var qa = function (s) { return [].slice.call(doc.querySelectorAll(s)); };
+    var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    /* 等某个元素上的过渡真的走完（没有正在跑的动画）再返回，返回等了多少毫秒。
+       为什么不能直接 wait(600) 就量：过渡是 .28s，但播放中内核每 250ms 会改写一次
+       目标值，过渡就一直差最后一点没走完，量到的渲染值是中间态
+       （2026-10-09 实测：内联已经 scaleX(0.28)，渲染却停在 0.0287）。
+       轮询到「没有正在跑的动画」为止，量到的才是最终位置。 */
+    var settle = function (el, maxMs) {
+      var spent = 0;
+      var step = function () {
+        var running = 0;
+        try { running = el.getAnimations().length; } catch (e) { running = 0; }
+        if (!running || spent >= maxMs) return spent;
+        spent += 100;
+        return wait(100).then(step);
+      };
+      return step();
+    };
+    var bg = function (el) { return el ? win.getComputedStyle(el).backgroundColor : 'null'; };
+    var dot = function (root, pack) {
+      var b = root.querySelector('[data-sfx-pack="' + pack + '"]');
+      return b ? b.querySelector('.radio') : null;
+    };
+    var ACCENT = 'rgb(62, 207, 178)';
+
+    function run() {
+      /* 1. 首屏 */
+      info('首屏');
+      ok('首页是当前页', q('#scr-home').classList.contains('is-active'));
+      ok('猜你喜欢有歌', qa('#listLikes [data-token]').length > 0,
+         qa('#listLikes [data-token]').length + ' 行');
+
+      /* 1b. 冷启动恢复上次播放（v1.9.27）：重启后迷你条带着上次那首、
+             暂停态，点 mini 的播放键就能续播（不会自动出声）。 */
+      info('冷启动恢复上次播放');
+      ok('冷启动后迷你条出现（有上次播放的歌）', !q('#mini').hidden);
+      ok('迷你条写的是上次那首',
+         (q('#miniTitle').textContent || '') !== '' && q('#miniTitle').textContent !== '—',
+         q('#miniTitle').textContent);
+      ok('恢复态是暂停的（图标是「播放」）',
+         q('#miniIconUse').getAttribute('href') === '#i-play',
+         q('#miniIconUse').getAttribute('href'));
+      q('#miniPlay').click();
+      return wait(350).then(function () {
+        ok('点 mini 的播放键就能续播（图标变「暂停」）',
+           q('#miniIconUse').getAttribute('href') === '#i-pause',
+           q('#miniIconUse').getAttribute('href'));
+
+        /* 2. 点一首歌 → 迷你播放器 → 展开播放页 */
+        info('播放页');
+        var row = q('#listLikes [data-token]');
+        row.click();
+        return wait(700);
+      }).then(function () {
+        /* 「猜你喜欢」只有几首收藏时，内核从榜单补足到 30 首再推 homeLikes
+           （用户报「猜你喜欢里面就一首歌 要三十首才对」） */
+        ok('猜你喜欢被补足到 30 首', qa('#listLikes [data-token]').length === 30,
+           qa('#listLikes [data-token]').length + ' 行');
+        ok('猜你喜欢标题上写出了首数（用户一眼能看到 30）',
+           q('#likesCount').textContent === '30', q('#likesCount').textContent);
+        ok('迷你播放器出现', !q('#mini').hidden);
+        q('#miniTap').click();
+        return wait(500);
+      }).then(function () {
+        ok('播放页打开', q('#player').classList.contains('is-open'));
+        ok('播放页有 6 个底部动作', qa('.player__bottom .iconbtn').length === 6,
+           qa('.player__bottom .iconbtn').length + ' 个');
+
+        /* 2b. 封面 ↔ 歌词：两态交叉淡入淡出（v1.9.22 之前是 display 硬切）。
+           等歌词层的过渡真的结束再量，不然量到的是中间帧。 */
+        info('歌词切换');
+        q('#pArt').click();
+        return wait(50).then(function () { return settle(q('#lyrics'), 1600); });
+      }).then(function () {
+        ok('点封面进入歌词', q('#lyrics').classList.contains('is-on'));
+        ok('歌词层完全淡入', parseFloat(win.getComputedStyle(q('#lyrics')).opacity) > .95,
+           win.getComputedStyle(q('#lyrics')).opacity);
+        ok('歌词层可交互', win.getComputedStyle(q('#lyrics')).pointerEvents === 'auto',
+           win.getComputedStyle(q('#lyrics')).pointerEvents);
+        ok('封面退场', parseFloat(win.getComputedStyle(q('#pArt')).opacity) < .05,
+           win.getComputedStyle(q('#pArt')).opacity);
+        /* v1.9.26 去掉了封面后的黑胶盘（真机上「方卡压黑圈」很丑），
+           这条断言的旧对象 #pDisc 已不存在；改成验证舞台上没有残留的 disc 层 */
+        ok('舞台只剩封面一层（黑胶盘已移除）', q('#pDisc') === null);
+        q('#lyrics').click();
+        return wait(50).then(function () { return settle(q('#lyrics'), 1600); });
+      }).then(function () {
+        ok('点歌词回到封面', !q('#lyrics').classList.contains('is-on'));
+        ok('封面回到可见', parseFloat(win.getComputedStyle(q('#pArt')).opacity) > .95,
+           win.getComputedStyle(q('#pArt')).opacity);
+
+        /* 3. 播放页 → 音效弹层。默认停在「播放音效」页签 —— 那才是改歌的声音的 DSP，
+           和「界面音效」（点一下响一声的提示音）是两回事，所以拆成两个页签。 */
+        info('播放页音效弹层');
+        ok('有音效按钮 #pSfx', !!q('#pSfx'));
+        q('#pSfx').click();
+        return wait(400);
+      }).then(function () {
+        ok('音效弹层打开', q('#sfxSheet').classList.contains('is-open'));
+        ok('默认停在「播放音效」页签',
+           q('#sfxSheet [data-sfx-tab="play"]').classList.contains('is-on') &&
+           !q('#sfxSheet [data-sfx-pane="play"]').hidden &&
+           q('#sfxSheet [data-sfx-pane="ui"]').hidden);
+        ok('播放音效有 3 组预设页签', qa('#sfxSheet [data-pf-group]').length === 3,
+           qa('#sfxSheet [data-pf-group]').length + ' 组');
+        ok('设备预设组 10 个 + 「关闭」', qa('#sfxSheet [data-pf-preset]').length === 11,
+           qa('#sfxSheet [data-pf-preset]').length + ' 个');
+        ok('增强有三个滑块', qa('#sfxSheet [data-pf-range]').length === 3,
+           qa('#sfxSheet [data-pf-range]').length + ' 个');
+        ok('混响有 6 个档位', qa('#sfxSheet [data-pf-reverb]').length === 6,
+           qa('#sfxSheet [data-pf-reverb]').length + ' 个');
+
+        /* 换一组（VLC 经典曲线）再选一个，选中态与摘要都要跟着走 */
+        q('#sfxSheet [data-pf-group="vlc"]').click();
+        return wait(250);
+      }).then(function () {
+        ok('切到「经典均衡」组后 18 个 + 「关闭」', qa('#sfxSheet [data-pf-preset]').length === 19,
+           qa('#sfxSheet [data-pf-preset]').length + ' 个');
+        q('#sfxSheet [data-pf-preset="14"]').click();
+        return wait(600);
+      }).then(function () {
+        ok('选中「重低音」后摘要跟着变', q('#sfxSheet [data-pf-state]').textContent === '重低音',
+           q('#sfxSheet [data-pf-state]').textContent);
+        ok('选中的 chip 亮起', q('#sfxSheet [data-pf-preset="14"]').classList.contains('is-on'));
+        ok('旁边的 chip 没亮', !q('#sfxSheet [data-pf-preset="13"]').classList.contains('is-on'));
+
+        /* 切到「界面音效」页签，音色包在那边 */
+        q('#sfxSheet [data-sfx-tab="ui"]').click();
+        return wait(300);
+      }).then(function () {
+        ok('切到「界面音效」页签',
+           q('#sfxSheet [data-sfx-tab="ui"]').classList.contains('is-on') &&
+           !q('#sfxSheet [data-sfx-pane="ui"]').hidden &&
+           q('#sfxSheet [data-sfx-pane="play"]').hidden);
+        ok('弹层里有 4 个音色包', qa('#sfxSheet [data-sfx-pack]').length === 4);
+        ok('弹层里有开关', !!q('#sfxSheet [data-sfx-switch]'));
+        ok('弹层里有音量条', !!q('#sfxSheet [data-sfx-range]'));
+
+        var wood = q('#sfxSheet [data-sfx-pack="wood"]');
+        wood.click();
+        return wait(400);
+      }).then(function () {
+        ok('点木质后 Sfx.pack = wood', win.Sfx && win.Sfx.pack === 'wood', win.Sfx && win.Sfx.pack);
+        /* 圆点是子元素，is-on 必须加在它身上；计算样式作为佐证 ——
+           headless 下 CSS 过渡可能被冻住（读到 t=0 的颜色），所以以类名为准。 */
+        ok('木质圆点亮起（class）', dot(q('#sfxSheet'), 'wood').classList.contains('is-on'));
+        ok('木质圆点底色是主色（佐证）', bg(dot(q('#sfxSheet'), 'wood')) === ACCENT,
+           bg(dot(q('#sfxSheet'), 'wood')));
+        ok('清透圆点灭掉', !dot(q('#sfxSheet'), 'crystal').classList.contains('is-on'));
+        ok('木质按钮自己带 is-on（弹层底色靠它）',
+           q('#sfxSheet [data-sfx-pack="wood"]').classList.contains('is-on'));
+
+        /* 4. 两个入口同步：回设置页看同一个音色包 */
+        info('两个入口同步');
+        q('#sheetMask').click();
+        return wait(400);
+      }).then(function () {
+        q('#playerClose').click();
+        return wait(400);
+      }).then(function () {
+        q('[data-tab-go="library"]').click();
+        return wait(250);
+      }).then(function () {
+        q('[data-push="scr-set-sfx"]').click();
+        return wait(250);
+      }).then(function () {
+        ok('设置页也认木质（同一份状态）', bg(dot(doc, 'wood')) === ACCENT,
+           bg(dot(doc, 'wood')));
+        ok('设置页摘要行跟着变', (q('#sfxSummary').textContent || '').indexOf('木质') === 0,
+           q('#sfxSummary').textContent);
+        ok('设置页音量条同步', q('#sfxRange').value === q('#sfxSheet [data-sfx-range]').value,
+           q('#sfxRange').value + ' / ' + q('#sfxSheet [data-sfx-range]').value);
+
+        /* 5. 关掉音效，两边都要灭 */
+        q('#sfxSwitch').click();
+        return wait(250);
+      }).then(function () {
+        ok('关掉后 Sfx.enabled = false', win.Sfx && win.Sfx.enabled === false);
+        ok('设置页开关显示关', !q('#sfxSwitch').classList.contains('is-on'));
+        ok('摘要行写「已关闭」', q('#sfxSummary').textContent === '已关闭', q('#sfxSummary').textContent);
+
+        /* 6. 音量：拖播放页那条，设置页那条也要动 */
+        var sheetRange = q('#sfxSheet [data-sfx-range]');
+        sheetRange.value = '20';
+        sheetRange.dispatchEvent(new win.Event('input', { bubbles: true }));
+        return wait(150);
+      }).then(function () {
+        ok('音量落到 0.2', Math.abs((win.Sfx.volume || 0) - 0.2) < 1e-6, String(win.Sfx.volume));
+        ok('设置页音量数字同步', q('#sfxVal').textContent === '20%', q('#sfxVal').textContent);
+        ok('播放页音量数字同步',
+           q('#sfxSheet [data-sfx-val]').textContent === '20%',
+           q('#sfxSheet [data-sfx-val]').textContent);
+        /* 收尾：音效开回来 */
+        q('#sfxSwitch').click();
+        return wait(150);
+      }).then(function () {
+        /* 7. 播放页「更多」弹层 */
+        info('播放页更多弹层');
+        q('[data-tab-go="home"]').click();
+        return wait(200);
+      }).then(function () {
+        q('#miniTap').click();
+        return wait(400);
+      }).then(function () {
+        ok('右上角是 #pMore（不再是死按钮）', !!q('#pMore'));
+        q('#pMore').click();
+        return wait(350);
+      }).then(function () {
+        ok('更多弹层打开', q('#moreSheet').classList.contains('is-open'));
+        ok('更多弹层里有当前歌名', (q('#moreSong').textContent || '').length > 1,
+           q('#moreSong').textContent);
+        q('#moreSheet [data-more="sfx"]').click();
+        return wait(350);
+      }).then(function () {
+        ok('更多 → 音效：音效弹层接上', q('#sfxSheet').classList.contains('is-open'));
+        ok('更多弹层已收起', !q('#moreSheet').classList.contains('is-open'));
+        q('#sheetMask').click();
+        return wait(350);
+      }).then(function () {
+        q('#playerClose').click();
+        return wait(350);
+
+        /* 8. 歌单详情排序 */
+      }).then(function () {
+        info('歌单详情排序');
+        q('[data-tab-go="home"]').click();
+        return wait(300);
+      }).then(function () {
+        var card = q('#homePlaylists [data-playlist]');
+        ok('首页有歌单卡', !!card);
+        card.click();
+        return wait(700);
+      }).then(function () {
+        ok('歌单详情打开', q('#scr-playlist').classList.contains('is-active'));
+        /* 详情对象必须带 img 字段（头图封面）。api.js 的 normalizeDetail 原来是白名单重建，
+           img 被静默丢掉过 —— 这条断言就是防它再被吃掉。 */
+        return win.Tide.playlistDetail(q('#scr-playlist').dataset.plid || 'x').then(function (d) {
+          ok('详情对象带 img 字段', d && 'img' in d, 'img=' + JSON.stringify(d && d.img));
+          ok('详情对象带 token 字段', d && !!d.token);
+          return null;
+        });
+      }).then(function () {
+        ok('排序按钮文字是「排序：默认」', q('#plSortLabel').textContent === '排序：默认',
+           q('#plSortLabel').textContent);
+        var first = q('#listPlaylist [data-token]');
+        var firstBefore = first ? first.textContent : '';
+        q('#plSort').click();
+        return wait(700).then(function () {
+          ok('切到「排序：歌名」', q('#plSortLabel').textContent === '排序：歌名',
+             q('#plSortLabel').textContent);
+          var rows = qa('#listPlaylist [data-token]');
+          var names = rows.map(function (r) {
+            var n = r.querySelector('.song__title');
+            return n ? (n.textContent || '').trim() : '';
+          });
+          var sorted = names.slice().sort(function (a, b) { return a.localeCompare(b, 'zh-Hans-CN'); });
+          ok('列表确实按歌名排了', names.join('|') === sorted.join('|'), names.slice(0, 3).join(' / '));
+          ok('第一行变了（不是原顺序）', rows.length === 0 || names[0] !== firstBefore);
+          ok('歌曲行里没有死掉的「…」按钮', qa('#listPlaylist [data-song-more]').length === 0);
+          q('#plSort').click();
+          return wait(600);
+        }).then(function () {
+          ok('再点是「排序：歌手」', q('#plSortLabel').textContent === '排序：歌手',
+             q('#plSortLabel').textContent);
+          q('#plSort').click();
+          return wait(600);
+        }).then(function () {
+          ok('第三次转回「排序：默认」', q('#plSortLabel').textContent === '排序：默认',
+             q('#plSortLabel').textContent);
+          q('#scr-playlist [data-pop]').click();
+          return wait(300);
+        });
+      }).then(function () {
+        /* 9. 账号页与隐私页：不许再有假数据 */
+        info('账号 / 隐私');
+        q('[data-tab-go="library"]').click();
+        return wait(400);
+      }).then(function () {
+        ok('我的页统计填了真值（不是 —）', q('#statLove').textContent !== '—',
+           '收藏 ' + q('#statLove').textContent + ' / 歌单 ' + q('#statLists').textContent);
+        ok('我的页不再有 VIP 角标', qa('.profile .vip').length === 0);
+        /* 设置并进「我的」当一级菜单：这些行要直接在这一页上，二级的「设置」页不存在了 */
+        ok('二级「设置」页已经没有了', q('#scr-settings') === null);
+        ok('我的页里直接有「主题与外观」', !!q('#scr-library [data-push="scr-set-theme"]'));
+        ok('我的页里直接有「播放音效」', !!q('#scr-library [data-push="scr-set-playfx"]'));
+        ok('我的页里直接有「界面音效」', !!q('#scr-library [data-push="scr-set-sfx"]'));
+        ok('我的页里直接有「洛雪原生设置」', !!q('#scr-library [data-native-settings]'));
+        /* v1.9.17：音源切换与添加歌源进了这一页的一级菜单（用户要求） */
+        ok('我的页里有「音源切换」', !!q('#scr-library [data-push="scr-source"]'));
+        ok('我的页里有「添加歌源」', !!q('#scr-library [data-push="scr-source-add"]'));
+        ok('音源那一行填了当前音源',
+           (q('#sourceSummary').textContent || '').indexOf('正在读取') === -1,
+           q('#sourceSummary').textContent);
+        /* 歌单搬去「收藏 · 歌单」了，这一页不再有歌单入口（用户要求：歌单只在收藏里） */
+        ok('我的页不再直接堆歌单列表',
+           q('#scr-library #myPlaylists') === null && q('#scr-library #favPlaylists') === null);
+        ok('我的页没有歌单入口行了', !q('#scr-library [data-favtab-go]'));
+
+        /* 音源页（v1.9.19）：原来是内核那页原生界面（用户嫌「很简陋、割裂感很强」），
+           现在自己画。这里真走一遍「进页面 → 换一个源 → 两处摘要都跟着变」。 */
+        info('音源页');
+        q('#scr-library [data-push="scr-source"]').click();
+        return wait(500);
+      }).then(function () {
+        ok('音源页打开了', q('#scr-source').classList.contains('is-active'));
+        ok('音源页有「当前音源」卡', (q('#srcNowName').textContent || '').length > 0,
+           q('#srcNowName').textContent);
+        var rows = qa('#srcList [data-pick-src]');
+        ok('音源列表列出了全部音源', rows.length === 5, rows.length + ' 个');
+        var on = qa('#srcList [data-pick-src].is-on');
+        ok('列表里正好一个是选中态', on.length === 1, on.length + ' 个');
+        ok('音源页里也能添加音源（走潮汐自己画的那页，不再弹内核那个实验性弹层）',
+           !!q('#scr-source [data-push="scr-source-add"]') &&
+           !q('#scr-source [data-native-page="apiSource:add"]'));
+        /* 脚本头里的 @version 有的自带 v，直接补一个会拼成「vv0.74.0」（设备截图里看见的） */
+        ok('版本号没被拼成 vv…',
+           (q('#srcList').textContent || '').indexOf('vv') === -1,
+           (q('#srcList').textContent || '').slice(0, 60));
+        /* 换一个不是当前的那个 */
+        var other = rows.filter(function (r) { return !r.classList.contains('is-on'); })[0];
+        pickedSrc = other.dataset.pickSrc;
+        pickedName = other.querySelector('.s-row__title').textContent;
+        other.click();
+        return wait(700);
+      }).then(function () {
+        ok('点了另一个源后「当前音源」跟着变',
+           q('#srcNowName').textContent === pickedName, q('#srcNowName').textContent);
+        ok('选中态移到新那个',
+           q('#srcList [data-pick-src].is-on').dataset.pickSrc === pickedSrc);
+        ok('弹出的提示写的是新源',
+           (q('#toast').textContent || '').indexOf(pickedName) > -1, q('#toast').textContent);
+        q('#scr-source [data-pop]').click();
+        return wait(500);
+      }).then(function () {
+        ok('返回后「我的」那一行摘要也换成新源',
+           (q('#sourceSummary').textContent || '').indexOf(pickedName) > -1,
+           q('#sourceSummary').textContent);
+        /* ── 添加音源页（v1.9.20） ──────────────────────────────────────
+           用户第二次反馈「音源点进去三级菜单还是很割裂」—— 那个「三级菜单」就是
+           内核的「自定义源管理（实验性）」弹层。现在自己画一页，这里真走一遍：
+           进页面 → 空地址点导入（要红字）→ 好地址导入（列表要长一条）→
+           点垃圾桶再点删除（两段式）→ 列表要少一条。 */
+        info('添加音源页');
+        q('#scr-library [data-push="scr-source-add"]').click();
+        return wait(500);
+      }).then(function () {
+        ok('添加音源页打开了', q('#scr-source-add').classList.contains('is-active'));
+        ok('添加音源页不再指向内核那个实验性弹层',
+           !q('#scr-source-add [data-native-page]'));
+        ok('有在线地址输入框', !!q('#srcUrl'));
+        ok('有「从本地文件导入」那一行', !!q('#srcFilePick'));
+        var rows = qa('#srcAddList .s-row');
+        addBefore = rows.length;
+        ok('已装音源列表画出来了', rows.length === 5, rows.length + ' 个');
+        ok('已装列表的数与标题一致',
+           q('#srcAddCount').textContent === String(rows.length), q('#srcAddCount').textContent);
+        ok('每一行都有删除键', qa('#srcAddList [data-del-ask]').length === rows.length);
+        /* 空地址点导入：要给红字，不能一声不响 */
+        q('#srcUrlGo').click();
+        return wait(120);
+      }).then(function () {
+        ok('空地址点导入会提示',
+           q('#srcUrlHint').classList.contains('is-bad') &&
+           (q('#srcUrlHint').textContent || '').indexOf('地址') > -1,
+           q('#srcUrlHint').textContent);
+        /* 少了协议的域名要能自己补成 https://（预览 mock 认这个前缀） */
+        q('#srcUrl').value = 'example.com/my-source.js';
+        q('#srcUrl').dispatchEvent(new win.Event('input', { bubbles: true }));
+        q('#srcUrlGo').click();
+        return wait(600);
+      }).then(function () {
+        ok('少了协议的地址被补成 https 后导入成功',
+           q('#srcUrlHint').classList.contains('is-ok'), q('#srcUrlHint').textContent);
+        ok('导入成功后输入框清空了', q('#srcUrl').value === '');
+        var rows = qa('#srcAddList .s-row');
+        ok('列表多了一条', rows.length === addBefore + 1, rows.length + ' 个');
+        ok('标题上的数也跟着涨', q('#srcAddCount').textContent === String(rows.length),
+           q('#srcAddCount').textContent);
+        ok('新那条的名字来自地址里的文件名',
+           (q('#srcAddList').textContent || '').indexOf('my-source') > -1,
+           (q('#srcAddList').textContent || '').slice(-80));
+        /* 从本地文件导入（预览 mock 直接给一个「本地导入音源」） */
+        q('#srcFilePick').click();
+        return wait(600);
+      }).then(function () {
+        var rows = qa('#srcAddList .s-row');
+        ok('从本地文件也能导入', rows.length === addBefore + 2, rows.length + ' 个');
+        ok('本地导入那条也在列表里',
+           (q('#srcAddList').textContent || '').indexOf('本地导入音源') > -1);
+        /* 删除做成两段式：点垃圾桶先问一句 */
+        var trash = q('#srcAddList [data-del-ask]');
+        delId = trash.dataset.delAsk;
+        trash.click();
+        return wait(150);
+      }).then(function () {
+        ok('点垃圾桶后原地出现「取消 / 删除」', !!q('#srcAddList [data-del-go]'));
+        ok('这时候还没真删',
+           qa('#srcAddList .s-row').length === addBefore + 2,
+           qa('#srcAddList .s-row').length + ' 个');
+        /* 先试一次「取消」 */
+        q('#srcAddList [data-del-cancel]').click();
+        return wait(150);
+      }).then(function () {
+        ok('点「取消」回到垃圾桶', !q('#srcAddList [data-del-go]') &&
+           !!q('#srcAddList [data-del-ask]'));
+        ok('「取消」之后一条都没少',
+           qa('#srcAddList .s-row').length === addBefore + 2);
+        /* 再走一次，这回真删 */
+        var again = qa('#srcAddList [data-del-ask]').filter(function (b) {
+          return b.dataset.delAsk === delId;
+        })[0];
+        again.click();
+        return wait(150).then(function () {
+          q('#srcAddList [data-del-go]').click();
+          return wait(700);
+        });
+      }).then(function () {
+        ok('点「删除」后列表少了一条',
+           qa('#srcAddList .s-row').length === addBefore + 1,
+           qa('#srcAddList .s-row').length + ' 个');
+        ok('删掉的那条不在了',
+           qa('#srcAddList [data-del-ask]').filter(function (b) {
+             return b.dataset.delAsk === delId;
+           }).length === 0);
+        ok('弹出的提示写着删了哪个',
+           (q('#toast').textContent || '').indexOf('已删除') > -1, q('#toast').textContent);
+        /* 返回。注意「添加歌源」是从「我的」页直接进来的（上一页是页签层，不进返回栈），
+           所以这里退回「我的」页，再从「音源切换」进音源页看列表有没有跟着少。 */
+        q('#scr-source-add [data-pop]').click();
+        return wait(500);
+      }).then(function () {
+        ok('从添加音源页返回回到「我的」页',
+           q('#scr-library').classList.contains('is-active') &&
+           !q('#scr-source-add').classList.contains('is-active'));
+        q('#scr-library [data-push="scr-source"]').click();
+        return wait(600);
+      }).then(function () {
+        ok('返回音源页后列表也少了一条（两处共用同一份数据）',
+           qa('#srcList [data-pick-src]').length === addBefore + 1,
+           qa('#srcList [data-pick-src]').length + ' 个');
+        q('#scr-source [data-pop]').click();
+        return wait(500);
+      }).then(function () {
+        ok('再返回一次回到「我的」页',
+           q('#scr-library').classList.contains('is-active'));
+        /* 再进一次「添加音源」：上一次留下的「导入成功」不该带过来 */
+        q('#scr-library [data-push="scr-source-add"]').click();
+        return wait(500);
+      }).then(function () {
+        var h = q('#srcUrlHint');
+        ok('再进来时上一次的提示没有带过来（回到默认说明）',
+           (h.textContent || '').indexOf('下载并安装') > -1 &&
+           !h.classList.contains('is-bad') && !h.classList.contains('is-ok'),
+           h.textContent);
+        ok('再进来时输入框是空的', q('#srcUrl').value === '', q('#srcUrl').value);
+        q('#scr-source-add [data-pop]').click();
+        return wait(500);
+      }).then(function () {
+        /* 账号页的入口就在这一页上 */
+        q('[data-push="scr-set-account"]').click();
+        return wait(250);
+      }).then(function () {
+        var t = q('#scr-set-account').textContent;
+        ok('账号页说明没有账号体系', t.indexOf('没有账号系统') > -1);
+        ok('账号页没有假手机号', t.indexOf('138') === -1);
+        ok('账号页没有假昵称', t.indexOf('夜航西飞') === -1);
+        ok('账号页本机数据填了', q('#acctLove').textContent !== '—', q('#acctLove').textContent);
+        q('#scr-set-account [data-push="scr-set-privacy"]').click();
+        return wait(300);
+      }).then(function () {
+        ok('隐私页有清除搜索历史的真入口', !!q('#privacyClearHistory'));
+        var before = q('#historyChips') ? q('#historyChips').children.length : -1;
+        q('#privacyClearHistory').click();
+        return wait(500).then(function () {
+          var toast = q('#toast');
+          ok('弹出「搜索历史已清空」', (toast.textContent || '').indexOf('清空') > -1,
+             toast.textContent);
+          info('（搜索历史原先 ' + before + ' 条）');
+          return true;
+        });
+      }).then(function () {
+        /* 10. 搜索联想：边打字边给候选，点候选才真搜 */
+        info('搜索联想');
+        q('#scr-set-privacy [data-pop]').click();
+        return wait(250);
+      }).then(function () {
+        /* 回到推荐页签（搜索入口在首页上） */
+        q('[data-tab-go="home"]').click();
+        return wait(300);
+      }).then(function () {
+        q('[data-push="scr-search"]').click();
+        return wait(700);
+      }).then(function () {
+        var inp = q('#searchInput');
+        ok('搜索页默认没有联想列表', q('#searchTipList').hidden);
+        ok('搜索页默认显示历史与热搜',
+           !q('#searchHistorySec').hidden && !q('#searchHotSec').hidden);
+        inp.value = '周';
+        inp.dispatchEvent(new win.Event('input', { bubbles: true }));
+        return wait(800);
+      }).then(function () {
+        var box = q('#searchTipList');
+        ok('打字后弹出联想列表', !box.hidden);
+        ok('联想第一行是「搜索原文」', !!q('#searchTipList [data-tip-go]'));
+        ok('历史/热搜/结果都收起来了',
+           q('#searchHistorySec').hidden && q('#searchHotSec').hidden &&
+           q('#searchResultsSec').hidden);
+        ok('底部「已经到底啦」也收起来了', q('#searchFoot').hidden);
+        var tips = qa('#searchTipList [data-tip]').map(function (b) { return b.dataset.tip; });
+        ok('本地候选里有「周杰伦」', tips.indexOf('周杰伦') > -1, tips.slice(0, 4).join(' / '));
+        ok('候选里把命中的字标出来了',
+           (q('#searchTipList [data-tip] .tip__text').innerHTML || '').indexOf('<b>') > -1);
+        q('#searchTipList [data-tip="周杰伦"]').click();
+        return wait(700);
+      }).then(function () {
+        ok('点候选后输入框换成该词', q('#searchInput').value === '周杰伦', q('#searchInput').value);
+        ok('点候选后联想列表收起', q('#searchTipList').hidden);
+        ok('点候选后出了结果', !q('#searchResultsSec').hidden &&
+           qa('#listResults [data-token]').length > 0,
+           q('#resultTitle').textContent);
+        q('#searchClear').click();
+        return wait(600);
+      }).then(function () {
+        ok('清空输入后回到历史与热搜',
+           !q('#searchHistorySec').hidden && !q('#searchHotSec').hidden &&
+           q('#searchTipList').hidden && q('#searchResultsSec').hidden);
+        ok('搜过的词进了历史', qa('#historyChips .chip').some(function (c) {
+          return c.textContent === '周杰伦';
+        }));
+      }).then(function () {
+        /* 搜索页的「歌曲 / 歌单」两个页签。歌单是内核跨平台聚合出来的**另一条请求**，
+           所以只在真的切到「歌单」页签时才发 —— 这里顺便把这一点验掉。 */
+        info('搜索 · 歌曲 / 歌单 两页签');
+        var inp2 = q('#searchInput');
+        inp2.value = '夜';
+        inp2.dispatchEvent(new win.Event('input', { bubbles: true }));
+        return wait(600);
+      }).then(function () {
+        q('#searchTipList [data-tip-go]').click();
+        return wait(700);
+      }).then(function () {
+        ok('搜完默认停在「歌曲」页签',
+           q('#searchSeg [data-search-tab="song"]').classList.contains('is-on') &&
+           q('#listResultLists').hidden && !q('#listResults').hidden);
+        ok('歌曲结果里有歌', qa('#listResults [data-token]').length > 0,
+           q('#resultTitle').textContent);
+        q('#searchSeg [data-search-tab="list"]').click();
+        return wait(700);
+      }).then(function () {
+        ok('切到「歌单」页签后歌曲列表收起',
+           !q('#listResultLists').hidden && q('#listResults').hidden);
+        ok('歌单结果里有歌单', qa('#listResultLists .plist__item').length > 0,
+           q('#resultTitle').textContent);
+        ok('歌单结果的标题写的是「张歌单」', /张歌单/.test(q('#resultTitle').textContent),
+           q('#resultTitle').textContent);
+        /* 切回歌曲页签：原来那份结果该还在，不该被清掉 */
+        q('#searchSeg [data-search-tab="song"]').click();
+        return wait(300);
+      }).then(function () {
+        ok('切回歌曲页签结果还在',
+           qa('#listResults [data-token]').length > 0 && q('#listResultLists').hidden);
+        ok('标题跟着页签切回来', /首$/.test(q('#resultTitle').textContent),
+           q('#resultTitle').textContent);
+      }).then(function () {
+        /* 11. 搜索源 / 加载更多：原生搜索页顶栏有平台选择器，潮汐这边原来漏了；
+           另外第一页之后要能继续翻，不能永远只给 30 首。 */
+        info('搜索源 / 加载更多');
+        var chips = qa('#searchSrcChips [data-search-src]');
+        ok('搜索页有搜索源选择器', chips.length === 6, chips.length + ' 个');
+        var on = q('#searchSrcChips .is-on');
+        ok('默认选「全部」', !!on && on.textContent === '全部', on && on.textContent);
+        ok('选择器写明了当前源',
+           (q('#searchSrcBar').getAttribute('aria-label') || '') === '搜索源：全部',
+           q('#searchSrcBar').getAttribute('aria-label'));
+        q('#searchSrcChips [data-search-src="kw"]').click();
+        return wait(800);
+      }).then(function () {
+        var on = q('#searchSrcChips .is-on');
+        ok('点「酷我」后选中态跟着变', !!on && on.textContent === '酷我', on && on.textContent);
+        ok('选择传到了桥',
+           win.__tideSearchSource === 'kw' && win.__tideSearchArgs && win.__tideSearchArgs.source === 'kw',
+           (win.__tideSearchSource || '?') + ' / ' + JSON.stringify(win.__tideSearchArgs));
+        ok('切源后当前词自动重搜', qa('#listResults [data-token]').length > 0,
+           q('#resultTitle').textContent);
+        ok('还有下一页时底部给「加载更多」', !!q('#searchFoot #searchMore'), q('#searchFoot').textContent);
+        var before = qa('#listResults [data-token]').length;
+        q('#searchFoot #searchMore').click();
+        return wait(900).then(function () { return before; });
+      }).then(function (before) {
+        ok('点「加载更多」后列表变长',
+           qa('#listResults [data-token]').length === before + 2,
+           before + ' -> ' + qa('#listResults [data-token]').length);
+        ok('没有下一页时底部写「已经到底啦」',
+           /已经到底啦/.test(q('#searchFoot').textContent), q('#searchFoot').textContent);
+        /* 停在「歌单」页签搜新词 → 切回「歌曲」时不能是空白 */
+        q('#searchSeg [data-search-tab="list"]').click();
+        return wait(500);
+      }).then(function () {
+        var inp = q('#searchInput');
+        inp.value = '周';
+        inp.dispatchEvent(new win.Event('input', { bubbles: true }));
+        return wait(500);
+      }).then(function () {
+        q('#searchTipList [data-tip-go]').click();
+        return wait(700);
+      }).then(function () {
+        ok('在歌单页签搜新词时歌曲先不取', qa('#listResults [data-token]').length === 0);
+        q('#searchSeg [data-search-tab="song"]').click();
+        return wait(800);
+      }).then(function () {
+        ok('切回歌曲页签会补取结果（不是空白）',
+           qa('#listResults [data-token]').length > 0, q('#resultTitle').textContent);
+        q('#searchSrcChips [data-search-src="all"]').click();
+        return wait(500);
+      }).then(function () {
+        ok('能切回「全部」', q('#searchSrcChips .is-on').textContent === '全部');
+      }).then(function () {
+        /* 收藏页的两个页签：歌曲 / 歌单（自建 + 收藏的歌单都在「歌单」里） */
+        info('收藏 · 歌曲 / 歌单 两页签');
+        q('[data-tab-go="fav"]').click();
+        return wait(500);
+      }).then(function () {
+        ok('收藏页默认停在「歌曲」页签',
+           !q('#favSongPane').hidden && q('#favListPane').hidden);
+        ok('收藏页标题是「我喜欢的音乐」', q('#favTitle').textContent === '我喜欢的音乐',
+           q('#favTitle').textContent);
+        q('#favSeg [data-fav-tab="list"]').click();
+        return wait(500);
+      }).then(function () {
+        ok('切到「歌单」页签后歌曲列表收起',
+           q('#favSongPane').hidden && !q('#favListPane').hidden);
+        ok('歌单页签标题变成「我的歌单」', q('#favTitle').textContent === '我的歌单',
+           q('#favTitle').textContent);
+        ok('歌单页签里有「我创建的歌单」', qa('#myPlaylists .plist__item').length > 0,
+           qa('#myPlaylists .plist__item').length + ' 个自建');
+        ok('歌单页签里有「我收藏的歌单」', qa('#favPlaylists .plist__item').length > 0,
+           qa('#favPlaylists .plist__item').length + ' 个收藏');
+        ok('歌单页签里有「新建」入口', !!q('#favListPane [data-push="scr-newlist"]'));
+        /* 歌单只在「收藏 · 歌单」里（用户要求：不要放「我的」里）：
+           离开这一页再切回来，页签状态要保住 */
+        q('[data-tab-go="library"]').click();
+        return wait(400);
+      }).then(function () {
+        ok('「我的」页没有歌单入口了', !q('#scr-library [data-favtab-go]'));
+        q('[data-tab-go="fav"]').click();
+        return wait(500);
+      }).then(function () {
+        ok('切回收藏页仍停在歌单页签',
+           q('#scr-fav').classList.contains('is-active') &&
+           !q('#favListPane').hidden &&
+           q('#favSeg [data-fav-tab="list"]').classList.contains('is-on'));
+      }).then(function () {
+        /* 推给原生的调色板（v1.9.19）
+           原生子页面（洛雪原生设置、音源、评论…）吃的是原生那套 token，
+           界面有六套皮肤 + 一个可换主题色。不打通就是「深色界面点设置，
+           蹦出一张绿底白卡的安卓版设置页」—— 用户报的「很割裂」。
+           这里验的是：推过去的那组色值 = 界面此刻真的在用的色值（计算样式），
+           并且换皮肤之后会重新推一组。 */
+        info('原生调色板同步');
+        var sent = win.Tide._lastTheme ? win.Tide._lastTheme() : null;
+        sentPalette = sent;
+        ok('界面把调色板推给了原生', !!sent && !!sent.accent && !!sent.bg, sent && sent.accent);
+        var cs = win.getComputedStyle(doc.documentElement);
+        var val = function (n) { return (cs.getPropertyValue(n) || '').trim(); };
+        ok('推的主题色就是界面此刻的主题色', sent && sent.accent === val('--accent'),
+           (sent && sent.accent) + ' / ' + val('--accent'));
+        ok('推的底色就是界面此刻的底色', sent && sent.bg === val('--bg'),
+           (sent && sent.bg) + ' / ' + val('--bg'));
+        /* 卡片要的是实底：深色下 --card 是 4.5% 白，铺到原生页面等于没有卡片 */
+        ok('推的卡片色取的是实底 --card-solid', sent && sent.card === val('--card-solid'),
+           (sent && sent.card) + ' / ' + val('--card-solid'));
+        ok('推的分割线就是界面的 hairline', sent && sent.divider === val('--hairline'),
+           (sent && sent.divider) + ' / ' + val('--hairline'));
+        ok('深浅模式也一起推了（不然原生页会白一块）',
+           sent && typeof sent.dark === 'boolean' &&
+           sent.dark === (doc.documentElement.dataset.theme === 'dark'));
+        /* 换一套皮肤，看它会不会重新推一组 */
+        q('[data-tab-go="library"]').click();
+        return wait(400);
+      }).then(function () {
+        q('#scr-library [data-push="scr-set-theme"]').click();
+        return wait(450);
+      }).then(function () {
+        q('[data-skin-set="sakura"]').click();
+        return wait(400);
+      }).then(function () {
+        var sent2 = win.Tide._lastTheme();
+        ok('换皮肤后重新推了一组色（主题色跟着皮肤变）',
+           sent2 && sent2.accent === '#FF6BCB' &&
+           (!sentPalette || sent2.accent !== sentPalette.accent),
+           sent2 && sent2.accent);
+        var cs2 = win.getComputedStyle(doc.documentElement);
+        ok('换皮肤后的底色也是界面此刻的底色',
+           sent2 && sent2.bg === (cs2.getPropertyValue('--bg') || '').trim(),
+           (sent2 && sent2.bg) + ' / ' + (cs2.getPropertyValue('--bg') || '').trim());
+        q('[data-skin-set="ink"]').click();
+        return wait(400);
+      }).then(function () {
+        ok('换回原皮肤后主题色也回到原值',
+           win.Tide._lastTheme().accent === '#3ECFB2', win.Tide._lastTheme().accent);
+        /* 主题页真开关：虚化/翻译/动效/桌面歌词。原来全是摆设，翻了不存；
+           现在四个都接上（桌面歌词走原生悬浮窗），通知/隐私两页的摆设开关不许翻。 */
+        info('主题页真开关');
+        q('[data-ui-switch="playerBlur"]').click();
+        q('[data-ui-switch="lyricTr"]').click();
+        q('[data-ui-switch="uiMotion"]').click();
+        q('[data-ui-switch="desktopLyric"]').click();
+        return wait(400);
+      }).then(function () {
+        ok('关掉「封面背景虚化」后播放页背景不再糊',
+           q('#playerBg').classList.contains('is-noblur'));
+        ok('关掉「显示歌词翻译」后 html.no-tr',
+           doc.documentElement.classList.contains('no-tr'));
+        ok('关掉「界面动效」后 html.no-motion',
+           doc.documentElement.classList.contains('no-motion'));
+        ok('桌面歌词开关传到了桥',
+           win.__tideDesktopLyric === true &&
+           q('[data-ui-switch="desktopLyric"]').classList.contains('is-on'),
+           win.__tideDesktopLyric);
+        var notifySw = q('#scr-set-notify .switch');
+        var wasOn = notifySw.classList.contains('is-on');
+        notifySw.click();
+        ok('通知页的摆设开关点了不变', notifySw.classList.contains('is-on') === wasOn);
+        ok('摆设开关是压暗的（看得出来不可用）',
+           parseFloat(win.getComputedStyle(notifySw).opacity) < 0.8,
+           win.getComputedStyle(notifySw).opacity);
+        /* 全部拨回默认，别把后面的歌词/进度断言带歪 */
+        q('[data-ui-switch="playerBlur"]').click();
+        q('[data-ui-switch="lyricTr"]').click();
+        q('[data-ui-switch="uiMotion"]').click();
+        return wait(250);
+      }).then(function () {
+        ok('开关都拨回默认（虚化开/翻译开/动效开）',
+           !q('#playerBg').classList.contains('is-noblur') &&
+           !doc.documentElement.classList.contains('no-tr') &&
+           !doc.documentElement.classList.contains('no-motion'));
+        q('#scr-set-theme [data-pop]').click();
+        return wait(450);
+      }).then(function () {
+        /* 转场（用户报的「有些跳转比较生硬」）：每个方向都得有动画，而且同一套。
+           断言的是「动画类真的加上了」+「过程中两个屏幕同时可见」，
+           因为只断言最终状态的话，把动画删掉照样能过。 */
+        info('转场');
+        ok('启动时界面淡入（is-boot 已摘掉）', !doc.documentElement.classList.contains('is-boot'));
+        ok('首屏 .app 不透明', win.getComputedStyle(q('.app')).opacity === '1');
+
+        /* 前面停在「我的」页签（刚退掉主题子页），先回首页再测「同层切换」 */
+        q('[data-tab-go="home"]').click();
+        return wait(500);
+      }).then(function () {
+        q('[data-tab-go="library"]').click();
+        var leaving = qa('.screen.is-leave');
+        var entering = qa('.screen.is-enter');
+        ok('页签切换：旧页有出场动画', leaving.length === 1, leaving.map(function (s) { return s.id; }).join());
+        ok('页签切换：新页有入场动画', entering.length === 1, entering.map(function (s) { return s.id; }).join());
+        ok('页签切换：两个屏幕同时在屏上（不露底色）',
+           leaving.length === 1 && entering.length === 1 &&
+           win.getComputedStyle(leaving[0]).display === 'flex' &&
+           win.getComputedStyle(entering[0]).display === 'flex');
+        return wait(450);
+      }).then(function () {
+        ok('动画结束后出场类被摘掉', qa('.screen.is-leave').length === 0);
+        /* 进子页 → 退回来，两个方向都要有动画 */
+        q('[data-push="scr-set-sfx"]').click();
+        return wait(120);
+      }).then(function () {
+        ok('进子页：上一层退到后面（不是一下子消失）', qa('.screen.is-behind').length === 1,
+           qa('.screen.is-behind').map(function (s) { return s.id; }).join());
+        ok('进子页：新页是当前页', q('#scr-set-sfx').classList.contains('is-active'));
+        ok('进子页：同一时刻只有一个当前页', qa('.screen.is-active').length === 1);
+        return wait(400);
+      }).then(function () {
+        q('#scr-set-sfx [data-pop]').click();
+        return wait(120);
+      }).then(function () {
+        ok('退子页：子页往右滑出（有出场动画）', qa('.screen--sub.is-pop').length === 1);
+        ok('退子页：上一层从左侧回位', qa('.screen.is-returning').length === 1,
+           qa('.screen.is-returning').map(function (s) { return s.id; }).join());
+        ok('退子页：子页已不是当前页', !q('#scr-set-sfx').classList.contains('is-active'));
+        return wait(450);
+      }).then(function () {
+        ok('退子页动画结束后类都摘掉了',
+           qa('.screen.is-pop').length === 0 && qa('.screen.is-returning').length === 0);
+        /* 进度条现在是 transform:scaleX 驱动的（原来是 width + .28s 过渡 ——
+           内核每秒推 4 次进度、过渡却要 .28s，播放期间那条过渡永远跑不完，
+           CDP 实测每 3 秒 501 次重排、主线程一直被占着）。
+           这里验的是「真的按位置画在屏幕上了」：getBoundingClientRect 会把
+           transform 算进去，量到的就是渲染出来的宽度，不是样式表里写的值。 */
+        info('进度条（transform 驱动）');
+        q('#miniTap').click();
+        return wait(400);
+      }).then(function () {
+        /* 先确认播放页真的开着：进度条只在「看得见的那一条」上重画，
+           播放页没开的话 #pFill 会停在上一帧的旧值上，下面两条会莫名其妙地
+           量到一个陈旧的比例（排查时先看这里，别去怀疑 transform）。 */
+        ok('进度条这一步：播放页是开着的',
+           q('#player').classList.contains('is-open'));
+        /* 目标比例按「当前这首歌」的时长算，不写死 1/4：
+           第一首是哪首歌会随「猜你喜欢」的内容变（补足到 30 首之后第一首
+           从 4:24 变成了 3:55），写死的话验的就成了「演示数据」而不是进度条。 */
+        var d = /^(\d+):(\d+)$/.exec(q('#pDur').textContent || '');
+        expectRatio = d ? 66 / (Number(d[1]) * 60 + Number(d[2])) : 0.25;
+        /* 先暂停再 seek。播放中内核每 250ms 推一次进度、每次都会改写这条
+           transform，而过渡本身是 .28s —— 过渡永远差最后一点没走完，
+           量到的渲染值就停在中间（实测量到 3% 而内联已经是 28%）。
+           暂停之后目标不再被改写，过渡能真的走完，量的才是最终位置。 */
+        if (q('#mini').hidden === false) win.Tide.toggle();
+        return wait(150);
+      }).then(function () {
+        win.Tide.seek(66);
+        return settle(q('#pFill'), 1500);
+      }).then(function (settleMs) {
+        var track = q('#pBar .bar__track');
+        var fill = q('#pFill');
+        var tw = track.getBoundingClientRect().width;
+        var r1 = tw ? fill.getBoundingClientRect().width / tw : 0;
+        var m = /matrix\(([\d.]+)/.exec(win.getComputedStyle(fill).transform);
+        var times = (q('#pCur') ? q('#pCur').textContent : '?') + '/' +
+                    (q('#pDur') ? q('#pDur').textContent : '?');
+        ok('播放页进度条画在 seek 的位置上',
+           Math.abs(r1 - expectRatio) < 0.04,
+           '量到 ' + Math.round(r1 * 100) + '% / 期望 ' + Math.round(expectRatio * 100) +
+           '% · 时间 ' + times + ' · 过渡 ' + settleMs + 'ms');
+        /* 这条是机制本身：布局宽度还是满格（offsetWidth 不算 transform），
+           渲染出来却只有一小段 —— 说明靠的是 scaleX，不是改 width。
+           改 width 的话布局宽度会跟着变，也就是每帧都要重排。 */
+        ok('进度条靠 transform 缩放（布局宽度仍满格，不再改 width）',
+           !!m && Math.abs(Number(m[1]) - expectRatio) < 0.03 &&
+           Math.abs(fill.offsetWidth - track.offsetWidth) < 2,
+           'scaleX=' + (m ? m[1] : '?') + ' 布局宽=' + fill.offsetWidth + ' 轨道宽=' + track.offsetWidth);
+        q('#playerClose').click();
+        return wait(500);
+      }).then(function () {
+        /* 播放页开着时故意不画迷你条（它被整屏盖住），收起时得补上 ——
+           这一步就是验那次补画。迷你条也是 .28s 过渡，同样等它走完再量。 */
+        return settle(q('#miniFill'), 1500);
+      }).then(function () {
+        var bar = q('#mini .mini__bar');
+        var mf = q('#miniFill');
+        var bw = bar.getBoundingClientRect().width;
+        var r2 = bw ? mf.getBoundingClientRect().width / bw : 0;
+        ok('收起播放页后迷你条接着画在同一个位置（换目标会补画）',
+           Math.abs(r2 - expectRatio) < 0.05,
+           '量到 ' + Math.round(r2 * 100) + '% / 期望 ' + Math.round(expectRatio * 100) + '%');
+      }).then(function () {
+        /* 12. 榜单 / 歌单广场的平台选择器。这两个页面原来也只会读内核设置，
+              界面上没有入口；榜单副标题还写死了「共 12 个榜单」。 */
+        info('榜单平台 / 歌单平台');
+        q('[data-tab-go="charts"]').click();
+        return wait(900);
+      }).then(function () {
+        var chips = qa('#chartSrcChips [data-chart-src]');
+        ok('榜单页有平台选择器', chips.length === 5, chips.length + ' 个');
+        var on = q('#chartSrcChips .is-on');
+        ok('榜单平台默认是酷我', !!on && on.textContent === '酷我', on && on.textContent);
+        var n = qa('#chartGrid .chartcard').length;
+        ok('榜单副标题的数量与卡片数一致',
+           (q('#chartSub').textContent || '').indexOf('共 ' + n + ' 个榜单') > -1,
+           q('#chartSub').textContent);
+        q('#chartSrcChips [data-chart-src="kg"]').click();
+        return wait(900);
+      }).then(function () {
+        ok('点「酷狗」后榜单平台跟着变',
+           q('#chartSrcChips .is-on').textContent === '酷狗');
+        ok('榜单平台切换传到了桥', win.__tideChartSource === 'kg', win.__tideChartSource);
+        ok('榜单副标题带上平台名',
+           (q('#chartSub').textContent || '').indexOf('酷狗') > -1, q('#chartSub').textContent);
+        q('[data-tab-go="home"]').click();
+        return wait(400);
+      }).then(function () {
+        q('[data-push="scr-square"]').click();
+        return wait(900);
+      }).then(function () {
+        var chips = qa('#squareSrcChips [data-square-src]');
+        ok('歌单广场有平台选择器', chips.length === 5, chips.length + ' 个');
+        var on = q('#squareSrcChips .is-on');
+        ok('歌单平台默认是酷我', !!on && on.textContent === '酷我', on && on.textContent);
+        q('#squareSrcChips [data-square-src="tx"]').click();
+        return wait(900);
+      }).then(function () {
+        ok('点「QQ」后歌单平台跟着变',
+           q('#squareSrcChips .is-on').textContent === 'QQ');
+        ok('歌单平台切换传到了桥', win.__tideSquareSource === 'tx', win.__tideSquareSource);
+        ok('切平台后重新拉到了歌单',
+           qa('#squareList .plist__item').length > 0 &&
+           win.__tideSquareArgs && win.__tideSquareArgs.source === 'tx',
+           JSON.stringify(win.__tideSquareArgs));
+      }).then(function () {
+        /* 13. 下载与队列清空（v1.9.25）：队列真清空、下载桥链路、我的下载 sheet。
+           先退回首页（上一步在歌单广场 push 子页里），再从迷你条开播放页。 */
+        info('下载 / 队列清空');
+        q('#scr-square [data-pop]').click();
+        return wait(400);
+      }).then(function () {
+        q('#miniTap').click();
+        return wait(500);
+      }).then(function () {
+        q('#pQueue').click();
+        return wait(500);
+      }).then(function () {
+        ok('队列 sheet 打开', q('#queueSheet').classList.contains('is-open'));
+        info('（队列原有 ' + qa('#listQueue .song').length + ' 行）');
+        q('#queueClear').click();
+        return wait(500);
+      }).then(function () {
+        ok('清空传到了桥', win.__tideQueueClear === 1, win.__tideQueueClear);
+        /* v1.9.25 内核实测：全清会触发 watchList「当前歌被移除」→ 立刻停播。
+           所以清空 = 待播全清 + 保留正在播的这首（与主流音乐 App 一致）。 */
+        ok('清空后队列保留正在播的一首', qa('#listQueue .song').length === 1,
+           qa('#listQueue .song').length + ' 行');
+        ok('计数字跟着变成 1', q('#queueCount').textContent === '1', q('#queueCount').textContent);
+        ok('弹出「保留当前歌」的说明',
+           (q('#toast').textContent || '').indexOf('保留') > -1, q('#toast').textContent);
+        q('#sheetMask').click();
+        return wait(400);
+      }).then(function () {
+        /* 播放页还开着，下当前在播的歌 */
+        q('#pDownload').click();
+        return wait(800);
+      }).then(function () {
+        ok('下载当前歌传到了桥（current:true）',
+           win.__tideDownloadSong && win.__tideDownloadSong.current === true,
+           JSON.stringify(win.__tideDownloadSong));
+        ok('下载完成弹了「已下载」提示',
+           (q('#toast').textContent || '').indexOf('已下载') > -1, q('#toast').textContent);
+        q('#playerClose').click();
+        return wait(500);
+      }).then(function () {
+        /* 我的下载：潮汐自己的弹层（原来点开的是原生 stub 页，整页一个字） */
+        q('[data-tab-go="library"]').click();
+        return wait(400);
+      }).then(function () {
+        q('[data-native-page="downloads"]').click();
+        return wait(600);
+      }).then(function () {
+        ok('「我的下载」用潮汐自己的弹层',
+           q('#dlSheet').classList.contains('is-open'));
+        var rows = qa('#listDl .dl-row');
+        ok('下载列表画出了文件', rows.length === 2, rows.length + ' 个');
+        ok('计数字跟着列表走',
+           q('#dlCount').textContent === String(rows.length), q('#dlCount').textContent);
+        var first = rows[0] && rows[0].querySelector('.dl-row__del');
+        ok('每一行都有删除键', !!first);
+        if (first) first.click();
+        return wait(700);
+      }).then(function () {
+        ok('删除传到了桥（删的是第一行的文件）',
+           typeof win.__tideDownloadDelete === 'string' && win.__tideDownloadDelete.length > 0,
+           win.__tideDownloadDelete);
+        ok('删除后列表少了一条', qa('#listDl .dl-row').length === 1,
+           qa('#listDl .dl-row').length + ' 个');
+        ok('删除弹了提示',
+           (q('#toast').textContent || '').indexOf('已删除') > -1, q('#toast').textContent);
+        q('#sheetMask').click();
+        return wait(300);
+      }).then(function () {
+        /* 整张歌单入队：走歌单详情页那个「下载」按钮 */
+        q('[data-tab-go="home"]').click();
+        return wait(400);
+      }).then(function () {
+        var card = q('#homePlaylists [data-playlist]');
+        ok('回到首页有歌单卡（整单下载这一步要用）', !!card);
+        if (card) card.click();
+        return wait(700);
+      }).then(function () {
+        q('#plDownload').click();
+        return wait(700);
+      }).then(function () {
+        ok('整单下载传到了桥（带 token）',
+           win.__tideDownloadList && !!win.__tideDownloadList.token,
+           JSON.stringify(win.__tideDownloadList));
+        ok('整单下载弹了「已加入下载」',
+           (q('#toast').textContent || '').indexOf('已加入下载') > -1, q('#toast').textContent);
+        info('结果：' + (failed ? failed + ' 条不通过' : '全部通过'));
+        send(out.join('\n'));
+      }).catch(function (e) {
+        out.push('异常：' + (e && e.message ? e.message : e));
+        send(out.join('\n'));
+      });
+    }
+
+    /* 跑到一半卡住时别让外面干等 100 秒：先把已经走到的部分发回去，
+       这样至少能看到「停在哪一步」。同步抛错（比如某个元素没渲染出来、
+       q() 拿到 null 再点）不会进下面那个 .catch，也会被这里兜住。 */
+    setTimeout(function () {
+      if (out.length && out[out.length - 1].indexOf('结果：') !== 0) {
+        send('卡住了（还没跑完）\n' + out.join('\n'));
+      }
+    }, 170000);
+
+    setTimeout(function () {
+      try { run(); } catch (e) {
+        out.push('异常：' + (e && e.message ? e.message : e));
+        send(out.join('\n'));
+      }
+    }, 1500);
+  });
+})();
+</script>

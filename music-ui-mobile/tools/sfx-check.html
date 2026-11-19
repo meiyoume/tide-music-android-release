@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>潮汐音效试听</title>
+<style>
+:root{ --bg:#0A0B0F; --card:#14161C; --line:#242833; --text:#EDEFF3; --dim:#8A90A0; --accent:#3ECFB2; }
+*{ box-sizing:border-box; }
+body{
+  margin:0; padding:28px 22px 60px; background:var(--bg); color:var(--text);
+  font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+}
+h1{ font-size:19px; margin:0 0 4px; }
+.sub{ color:var(--dim); font-size:12.5px; margin:0 0 22px; }
+h2{ font-size:13px; color:var(--dim); font-weight:600; margin:26px 0 10px; letter-spacing:.04em; }
+.row{ display:flex; flex-wrap:wrap; gap:8px; }
+button{
+  font:inherit; color:var(--text); background:var(--card); border:1px solid var(--line);
+  border-radius:10px; padding:8px 14px; cursor:pointer; transition:.15s;
+}
+button:hover{ border-color:#3a4050; }
+button.on{ background:color-mix(in srgb, var(--accent) 16%, transparent); border-color:var(--accent); color:var(--accent); }
+.grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(104px,1fr)); gap:8px; }
+.grid button{ width:100%; }
+input[type=range]{ width:220px; vertical-align:middle; accent-color:var(--accent); }
+pre{
+  background:#0E1015; border:1px solid var(--line); border-radius:10px; padding:14px;
+  overflow:auto; font-size:12px; line-height:1.5; max-height:60vh;
+}
+.ok{ color:var(--accent); }
+.bad{ color:#FF6B7A; }
+</style>
+</head>
+<body>
+
+<h1>潮汐音效试听</h1>
+<p class="sub">全部现场合成，没有音频文件。挑一套音色包，点下面的按钮听。</p>
+
+<h2>音色包</h2>
+<div class="row" id="packs"></div>
+
+<h2>音量</h2>
+<div class="row">
+  <input type="range" id="vol" min="0" max="100" value="65">
+  <span id="volLabel" style="color:var(--dim);min-width:3.5em">65%</span>
+  <button id="mute">关闭音效</button>
+</div>
+
+<h2>单个事件</h2>
+<div class="grid" id="events"></div>
+
+<h2>组合</h2>
+<div class="row">
+  <button id="burst">连点 20 次（测发声上限）</button>
+  <button id="walk">走一遍流程</button>
+</div>
+
+<h2>离线渲染校验 <span class="sub" style="display:inline">（峰值 / 有效值 / 尾长 / 亮度）</span></h2>
+<div class="row"><button id="check">跑一遍校验</button></div>
+<pre id="out">点上面那个按钮开始。</pre>
+
+<script src="../sfx.js"></script>
+<script>
+(function () {
+'use strict';
+
+const $ = s => document.querySelector(s);
+const PACKS = [['crystal','清透'],['wood','木质'],['synth','电子'],['soft','柔和']];
+const EVENTS = [['tap','点击'],['tab','切页签'],['nav','翻页'],['like','收藏'],
+                ['unlike','取消收藏'],['play','播放'],['pause','暂停'],['skip','切歌'],
+                ['success','成功'],['error','失败']];
+
+let pack = 'crystal';
+
+const packBox = $('#packs');
+PACKS.forEach(([k, name]) => {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.className = k === pack ? 'on' : '';
+  b.onclick = () => {
+    pack = k;
+    Sfx.setPack(k);
+    [...packBox.children].forEach(c => c.classList.remove('on'));
+    b.classList.add('on');
+    Sfx.play('tab');
+  };
+  packBox.appendChild(b);
+});
+
+const evBox = $('#events');
+EVENTS.forEach(([k, name]) => {
+  const b = document.createElement('button');
+  b.textContent = name;
+  b.onclick = () => Sfx.play(k);
+  evBox.appendChild(b);
+});
+
+$('#vol').oninput = function () {
+  Sfx.setVolume(this.value / 100);
+  $('#volLabel').textContent = this.value + '%';
+};
+
+$('#mute').onclick = function () {
+  const on = !Sfx.enabled;
+  Sfx.setEnabled(on);
+  this.textContent = on ? '关闭音效' : '已关闭音效';
+  this.classList.toggle('on', !on);
+};
+
+/* 连点：验证 14 路并发上限不会把音频线程压住，也不会报错 */
+$('#burst').onclick = () => {
+  for (let i = 0; i < 20; i++) setTimeout(() => Sfx.play('tap'), i * 25);
+};
+
+$('#walk').onclick = () => {
+  const seq = ['tab','tap','like','skip','play','pause','success','nav','toast'];
+  seq.forEach((e, i) => setTimeout(() => Sfx.play(e), i * 260));
+};
+
+/* ── 离线渲染：把每个事件渲染成 PCM 来量，不看「有没有调函数」，看波形 ── */
+function zcr(data, from, to) {
+  let n = 0;
+  for (let i = from + 1; i < to; i++) {
+    if ((data[i - 1] < 0) !== (data[i] < 0)) n++;
+  }
+  return Math.round(n / ((to - from) / 44100));
+}
+
+async function check() {
+  const lines = [];
+  let bad = 0;
+  for (const [pk, pname] of PACKS) {
+    lines.push('── ' + pname + ' ──');
+    for (const [ev, ename] of EVENTS) {
+      const r = await Sfx.render(ev, { pack: pk, volume: 0.65, dur: 1.2 });
+      const d = r.buffer.getChannelData(0);
+      const bright = zcr(d, 0, Math.min(d.length, 4410));   // 前 100ms 的过零率
+      const clip = r.peak >= 0.999;
+      const silent = r.rms < 0.0015;
+      const tooLong = r.seconds > 0.9;
+      if (clip || silent || tooLong) bad++;
+      const flag = (clip ? ' 削顶' : '') + (silent ? ' 太轻' : '') + (tooLong ? ' 太长' : '');
+      lines.push(
+        '  ' + ename.padEnd(5, '　') +
+        ' 峰值 ' + r.peak.toFixed(3) +
+        '  有效值 ' + r.rms.toFixed(4) +
+        '  尾长 ' + r.seconds.toFixed(2) + 's' +
+        '  亮度 ' + String(bright).padStart(5) + ' 次/秒' +
+        (flag ? '   ←' + flag : '')
+      );
+    }
+  }
+  lines.push('');
+  lines.push(bad === 0 ? '全部 ' + (PACKS.length * EVENTS.length) + ' 个组合：有声、不削顶、尾长合理。'
+                       : bad + ' 个组合有问题。');
+  $('#out').textContent = lines.join('\n');
+  /* 只有从 http 跑的时候才回传（file:// 打开时 fetch 会失败，没必要） */
+  if (location.protocol.indexOf('http') === 0) {
+    try { fetch('/result', { method: 'POST', body: lines.join('\n') }); } catch (e) {}
+  }
+  return lines.join('\n');
+}
+
+$('#check').onclick = check;
+
+/* 无头跑：?check=1 时自动开跑，把结果 POST 回去。
+   出错也要回话，否则只能看到「等不到结果」，查不出是哪一步炸的。 */
+if (/[?&]check=1/.test(location.search)) {
+  const send = t => { try { fetch('/result', { method: 'POST', body: t }); } catch (e) {} };
+  window.addEventListener('error', e => send('页面报错: ' + e.message + ' @' + e.lineno));
+  window.addEventListener('unhandledrejection', e =>
+    send('未处理的 Promise 失败: ' + (e.reason && e.reason.message || e.reason)));
+  window.addEventListener('load', () => {
+    send('页面已加载，开始渲染…');
+    setTimeout(() => {
+      check().catch(e => send('渲染失败: ' + (e && e.message || e) + '\n' + (e && e.stack || '')));
+    }, 50);
+  });
+}
+})();
+</script>
+</body>
+</html>

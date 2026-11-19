@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tide click probe</title>
+<!--
+  Clicks one thing inside index.html (loaded in a same-origin iframe) and reports
+  what changed. Written because tapping the sound-pack rows in the app did
+  nothing while the switch next to them worked, and guessing why was not working.
+
+  Usage: python tools/click-probe.py '[data-sfx-pack="wood"]'
+-->
+<style>html,body{margin:0;height:100%;background:#06070A}iframe{display:block;border:0;width:100%;height:100%}</style>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+(function () {
+  var sel = new URLSearchParams(location.search).get('sel') || '[data-sfx-pack="wood"]';
+
+  function send(text) {
+    try { fetch('/result', { method: 'POST', body: text }); } catch (e) {}
+  }
+
+  document.getElementById('app').addEventListener('load', function () {
+    var doc = this.contentDocument;
+    var win = this.contentWindow;
+    var out = [];
+
+    setTimeout(function () {
+      /* 先走到设置里的音效页 */
+      var entry = doc.querySelector('[data-push="scr-set-sfx"]');
+      out.push('入口 [data-push=scr-set-sfx]: ' + (entry ? '找到' : '没找到'));
+      if (entry) entry.click();
+
+      setTimeout(function () {
+        var all = doc.querySelectorAll('[data-sfx-pack]');
+        out.push('[data-sfx-pack] 数量: ' + all.length);
+        var target = doc.querySelector(sel);
+        out.push('目标 ' + sel + ': ' + (target ? '找到' : '没找到'));
+        if (!target) return send(out.join('\n'));
+
+        var r = target.getBoundingClientRect();
+        out.push('目标 rect: x ' + Math.round(r.left) + '..' + Math.round(r.right) +
+                 '  y ' + Math.round(r.top) + '..' + Math.round(r.bottom));
+        var cs = win.getComputedStyle(target);
+        out.push('pointer-events=' + cs.pointerEvents + ' disabled=' + target.disabled +
+                 ' display=' + cs.display + ' visibility=' + cs.visibility);
+
+        /* 命中测试：目标中心点到底是谁 */
+        var cx = Math.round((r.left + r.right) / 2), cy = Math.round((r.top + r.bottom) / 2);
+        var hit = doc.elementFromPoint(cx, cy);
+        out.push('中心点(' + cx + ',' + cy + ') 命中: ' +
+                 (hit ? hit.tagName + '.' + (hit.className || '(无类)') : 'null') +
+                 '  closest(pack)=' + (hit && hit.closest('[data-sfx-pack]') ? '是' : '否'));
+
+        /* 顺便看看有没有捕获阶段的监听把事件吃掉：直接派发一次真实点击 */
+        function dots() {
+          return [].map.call(doc.querySelectorAll('[data-sfx-pack]'), function (b) {
+            var d = b.querySelector('.radio');
+            return b.dataset.sfxPack + '=' + (d ? win.getComputedStyle(d).backgroundColor : '?');
+          }).join('  ');
+        }
+        out.push('点击前圆点底色: ' + dots());
+        target.click();
+        setTimeout(function () {
+          out.push('点击后圆点底色: ' + dots());
+          out.push('摘要行: ' + (doc.querySelector('#sfxSummary') || {}).textContent);
+          send(out.join('\n'));
+        }, 300);
+      }, 900);
+    }, 1200);
+  });
+})();
+</script>

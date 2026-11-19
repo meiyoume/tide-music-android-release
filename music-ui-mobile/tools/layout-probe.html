@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>layout probe</title>
+<!--
+  量「有没有东西跑出视口右边」。
+  预览截图会裁掉右边约 20px（Edge 有最小窗口宽，见 TIDE-ANDROID.md 的坑 18），
+  所以截图右边缘被切**不等于**布局溢出 —— 这里直接比 rect.right 和 innerWidth。
+-->
+<style>html,body{margin:0;height:100%;background:#06070A}iframe{display:block;border:0;width:100%;height:100%}</style>
+<iframe id="app" src="../index.html"></iframe>
+<script>
+(function () {
+  var out = [];
+  function send(t) { try { fetch('/result', { method: 'POST', body: t }); } catch (e) {} }
+  document.getElementById('app').addEventListener('load', function () {
+    var doc = this.contentDocument, win = this.contentWindow;
+    var q = function (s) { return doc.querySelector(s); };
+    function check(label, sel) {
+      var el = q(sel);
+      if (!el) { out.push('缺失  ' + label + '  ' + sel); return; }
+      var r = el.getBoundingClientRect();
+      var over = Math.round(r.right - win.innerWidth);
+      out.push((over > 1 ? '溢出  ' : 'ok    ') + label +
+        '  left=' + Math.round(r.left) + ' right=' + Math.round(r.right) +
+        ' w=' + Math.round(r.width) + '  视口=' + win.innerWidth +
+        (over > 1 ? '  超出 ' + over + 'px' : ''));
+    }
+    setTimeout(function () {
+      out.push('视口 ' + win.innerWidth + 'x' + win.innerHeight +
+               '  documentElement.scrollWidth=' + doc.documentElement.scrollWidth);
+      q('#listLikes [data-token]').click();
+      setTimeout(function () {
+        q('#miniTap').click();
+        setTimeout(function () {
+          q('#pSfx').click();
+          setTimeout(function () {
+            check('音效弹层', '#sfxSheet');
+            check('弹层标题行', '#sfxSheet .sheet__head');
+            check('弹层总开关', '#sfxSheetSwitch');
+            check('音色包网格', '#sfxSheet .sfx-grid');
+            check('最后一个音色包(柔和)', '#sfxSheet [data-sfx-pack="soft"]');
+            check('音量行', '#sfxSheet .sfx-vol');
+            check('音量数字', '#sfxSheet [data-sfx-val]');
+            check('试听 chips', '#sfxSheet .sfx-try');
+            check('最后一个试听 chip', '#sfxSheet .sfx-try .chip:last-child');
+            out.push('音色包 rect: ' + [].map.call(doc.querySelectorAll('#sfxSheet .sfx-pack'), function (b) {
+              var r = b.getBoundingClientRect();
+              return b.querySelector('.sfx-pack__name').textContent + '=' + Math.round(r.left) + '..' + Math.round(r.right);
+            }).join('  '));
+            q('#sheetMask').click();
+            setTimeout(function () {
+              check('播放页底部动作行', '.player__bottom');
+              check('最后一个底部动作', '.player__bottom .iconbtn:last-child');
+              out.push('底部 6 个按钮: ' + [].map.call(doc.querySelectorAll('.player__bottom .iconbtn'), function (b) {
+                var r = b.getBoundingClientRect();
+                return Math.round(r.left) + '..' + Math.round(r.right);
+              }).join('  '));
+              send(out.join('\n'));
+            }, 500);
+          }, 600);
+        }, 600);
+      }, 700);
+    }, 1500);
+  });
+})();
+</script>

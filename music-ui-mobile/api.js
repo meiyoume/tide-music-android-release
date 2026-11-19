@@ -1,0 +1,882 @@
+/* ═══════════════════════════════════════════════════════════
+   潮汐音乐 · 数据层
+   同一套 UI 跑在两种数据源上：
+     · mock    —— 独立预览用（浏览器直接打开 index.html）
+     · native  —— 跑在洛雪安卓版内核里时，走 WebView 桥接
+   对外只暴露 window.Tide 这一个门面，app.js 不关心背后是谁。
+   ═══════════════════════════════════════════════════════════ */
+(function () {
+'use strict';
+
+/* ───────────────────── 共用工具 ───────────────────── */
+
+/* 用字符串算一个稳定的封面色键（a–h），让没有封面图的歌也有固定配色 */
+function coverKeyOf(str) {
+  var h = 0;
+  for (var i = 0; i < String(str).length; i++) h = (h * 31 + String(str).charCodeAt(i)) | 0;
+  return 'abcdefgh'[Math.abs(h) % 8];
+}
+
+/* 统一歌曲对象。native 与 mock 都产出这个形状，UI 只认它 */
+function makeSong(o) {
+  var key = String(o.key != null ? o.key : (o.source || '') + '_' + (o.name || '') + '_' + (o.singer || ''));
+  return {
+    key: key,
+    name: o.name || '未知歌曲',
+    singer: o.singer || '未知歌手',
+    album: o.album || '',
+    interval: o.interval || '',
+    source: o.source || '',
+    pic: o.pic || '',                       // 封面图 URL，可能为空
+    cover: o.cover || coverKeyOf(key),      // 无图时的渐变兜底色键
+  };
+}
+
+/* 极简事件总线 */
+function makeEmitter() {
+  var map = {};
+  return {
+    on: function (ev, fn) { (map[ev] || (map[ev] = [])).push(fn); },
+    emit: function (ev, payload) { (map[ev] || []).forEach(function (fn) { try { fn(payload); } catch (e) {} }); },
+  };
+}
+
+/* LRC 文本 → [{t, x, tr}]，翻译按时间戳合并 */
+function parseLrc(lrc, tlrc) {
+  function lines(text) {
+    var out = {};
+    if (!text) return out;
+    String(text).split(/\r?\n/).forEach(function (raw) {
+      var m = raw.match(/^\s*\[(\d+):(\d+(?:[.:]\d+)?)\]\s*(.*)$/);
+      if (!m) return;
+      var t = parseInt(m[1], 10) * 60 + parseFloat(m[2].replace(':', '.'));
+      var x = (m[3] || '').trim();
+      if (!x) return;
+      (out[t] || (out[t] = [])).push(x);
+    });
+    return out;
+  }
+  var main = lines(lrc), tr = lines(tlrc);
+  var times = Object.keys(main).map(Number).sort(function (a, b) { return a - b; });
+  if (!times.length) return [];
+  return times.map(function (t) {
+    return { t: t, x: main[t].join(' / '), tr: (tr[t] || []).join(' / ') };
+  });
+}
+
+/* ═════════════════════ 后端一：演示数据 ═════════════════════ */
+
+var DEMO = {
+  tracks: [
+    { t:'夜行列车',   a:'陈鸿宇',        al:'三旬',        d:'4:24', c:'a' },
+    { t:'潮汐',       a:'宿羽阳',        al:'潮汐',        d:'3:58', c:'b' },
+    { t:'南方的南',   a:'房东的猫',      al:'云烟成雨',    d:'4:11', c:'c' },
+    { t:'光年之外',   a:'G.E.M. 邓紫棋', al:'光年之外',    d:'3:55', c:'d' },
+    { t:'深海',       a:'Mr.',           al:'If I Am…',    d:'4:48', c:'e' },
+    { t:'失语者',     a:'蔡健雅',        al:'失语者',      d:'4:32', c:'f' },
+    { t:'晚风',       a:'陈粒',          al:'洄游',        d:'3:46', c:'g' },
+    { t:'月球上的人', a:'陈奕迅',        al:'认了吧',      d:'4:19', c:'h' },
+    { t:'起风了',     a:'买辣椒也用券',  al:'起风了',      d:'5:25', c:'b' },
+    { t:'理想三旬',   a:'陈鸿宇',        al:'浓烟下的诗歌电台', d:'4:43', c:'c' },
+    { t:'南山南',     a:'马頔',          al:'孤岛',        d:'5:11', c:'a' },
+    { t:'水星记',     a:'郭顶',          al:'飞行器的执行周期', d:'4:35', c:'d' },
+    { t:'不将就',     a:'李荣浩',        al:'有理想',      d:'4:06', c:'f' },
+    { t:'富士山下',   a:'陈奕迅',        al:'What\'s Going On…?', d:'4:26', c:'g' },
+    { t:'雨爱',       a:'杨丞琳',        al:'雨爱',        d:'4:02', c:'e' },
+    { t:'稻香',       a:'周杰伦',        al:'魔杰座',      d:'3:43', c:'h' },
+  ],
+  playlists: [
+    { id:'p1', name:'深夜独处时刻',   desc:'安静下来，和自己待一会儿',   c:'c', plays:'128.3万', count:42 },
+    { id:'p2', name:'通勤路上的鼓点', desc:'给自己一点向前走的动力',     c:'b', plays:'96.7万',  count:35 },
+    { id:'p3', name:'雨天与热咖啡',   desc:'窗外的雨，和杯子里升起的雾', c:'h', plays:'74.1万',  count:28 },
+    { id:'p4', name:'午夜合成器',     desc:'复古电子，城市霓虹的频率',   c:'d', plays:'63.5万',  count:31 },
+    { id:'p5', name:'木吉他与夏天',   desc:'一把琴，一个下午',           c:'f', plays:'52.9万',  count:24 },
+    { id:'p6', name:'华语经典回声',   desc:'那些年反复按下单曲循环的歌', c:'a', plays:'310.2万', count:50 },
+  ],
+  myPlaylists: [
+    { id:'m1', name:'我喜欢的音乐',   desc:'428 首 · 私密', c:'a', count:428 },
+    { id:'m2', name:'写代码的时候听', desc:'36 首 · 公开',  c:'b', count:36 },
+    { id:'m3', name:'跑步 BPM 170+',  desc:'22 首 · 公开',  c:'f', count:22 },
+    { id:'m4', name:'睡前别听',       desc:'18 首 · 公开',  c:'g', count:18 },
+  ],
+  favPlaylists: [
+    { id:'f1', name:'每天一首好歌',   desc:'由 潮汐音乐 更新 · 312 首', c:'c', count:312 },
+    { id:'f2', name:'咖啡馆爵士精选', desc:'由 蓝调笔记 更新 · 88 首',  c:'h', count:88 },
+    { id:'f3', name:'器乐纯音',       desc:'由 白噪音 更新 · 140 首',   c:'f', count:140 },
+  ],
+  charts: [
+    { id:'c1', name:'飙升榜', c:'g', meta:'较昨日上升 128 位' },
+    { id:'c2', name:'新歌榜', c:'b', meta:'每天 06:00 更新' },
+    { id:'c3', name:'热歌榜', c:'a', meta:'每小时 更新' },
+    { id:'c4', name:'原创榜', c:'d', meta:'每周五 更新' },
+    { id:'c5', name:'华语榜', c:'c', meta:'每天 12:00 更新' },
+    { id:'c6', name:'欧美榜', c:'f', meta:'每天 12:00 更新' },
+    { id:'c7', name:'电音榜', c:'e', meta:'每周三 更新' },
+    { id:'c8', name:'民谣榜', c:'h', meta:'每周五 更新' },
+  ],
+  hot: [
+    { w:'周杰伦新专辑', d:'时隔三年，他终于回来了', b:'爆' },
+    { w:'起风了 买辣椒也用券', d:'循环了一整个夏天', b:'热' },
+    { w:'陈奕迅 富士山下', d:'听懂已是曲中人', b:'' },
+    { w:'lofi 学习歌单', d:'适合写论文的纯音乐', b:'新' },
+    { w:'深海 Mr.', d:'华语摇滚的浪漫样本', b:'' },
+    { w:'午夜合成器', d:'复古电子回潮', b:'' },
+    { w:'陈粒 洄游', d:'她的第二张民谣实验', b:'' },
+    { w:'声音玩具', d:'成都乐队二十年', b:'' },
+  ],
+  lyrics: [
+    [
+      { t:0,  x:'——— 前奏 ———' },
+      { t:9,  x:'夜色把城市轻轻盖住', tr:'Night quietly covers the city' },
+      { t:16, x:'街灯在积水里发芽' },
+      { t:23, x:'我数着回家的第七个路口', tr:'Counting the seventh crossing home' },
+      { t:31, x:'风把外套吹得很响' },
+      { t:38, x:'像有人在替我说话' },
+      { t:46, x:'列车穿过无声的旷野', tr:'The train crosses a silent field' },
+      { t:54, x:'我把自己留在了上一站' },
+      { t:62, x:'如果明天醒来还在路上' },
+      { t:70, x:'再听一首歌吧', tr:'Let me play one more song' },
+      { t:79, x:'把所有的犹豫都交给风' },
+      { t:87, x:'交给这趟不会回头的列车' },
+      { t:96, x:'——— 间奏 ———' },
+      { t:110, x:'夜色把城市轻轻盖住' },
+      { t:118, x:'街灯在积水里发芽' },
+      { t:126, x:'我数着回家的第七个路口' },
+      { t:134, x:'风把外套吹得很响' },
+      { t:142, x:'像有人在替我说话' },
+      { t:152, x:'——— 尾奏 ———' },
+    ],
+    [
+      { t:0,  x:'——— 前奏 ———' },
+      { t:7,  x:'海面把月亮揉成了碎银', tr:'The sea kneads the moon into silver' },
+      { t:14, x:'我站在岸边数潮汐' },
+      { t:21, x:'一次来，一次走', tr:'One comes, one goes' },
+      { t:29, x:'像所有没说出口的话' },
+      { t:36, x:'退回去又涌上来' },
+      { t:44, x:'你说过会来的' },
+      { t:51, x:'我信了很久', tr:'I believed it for a long time' },
+      { t:59, x:'久到把等待过成了习惯' },
+      { t:67, x:'潮汐不欠任何人一个解释' },
+      { t:75, x:'它只是刚好经过这里', tr:'It just happens to pass by' },
+      { t:84, x:'——— 间奏 ———' },
+      { t:98, x:'海面把月亮揉成了碎银' },
+      { t:106, x:'我站在岸边数潮汐' },
+      { t:114, x:'一次来，一次走' },
+      { t:122, x:'像所有没说出口的话' },
+      { t:132, x:'——— 尾奏 ———' },
+    ],
+    [
+      { t:0,  x:'——— 前奏 ———' },
+      { t:8,  x:'光走了八年才到这里', tr:'The light took eight years to reach here' },
+      { t:15, x:'看见的时候它已经老了' },
+      { t:22, x:'我们以为的此刻' },
+      { t:30, x:'其实是别人的从前', tr:"What we call now is someone's past" },
+      { t:38, x:'所以别急着回答' },
+      { t:45, x:'所有问题都会变旧' },
+      { t:53, x:'我抬头的时候你在哪颗星上', tr:'Which star are you on when I look up' },
+      { t:62, x:'是不是也在看同一个方向' },
+      { t:70, x:'光年之外没有回声' },
+      { t:78, x:'但我还是喊了一声' },
+      { t:87, x:'——— 间奏 ———' },
+      { t:101, x:'光走了八年才到这里' },
+      { t:109, x:'看见的时候它已经老了' },
+      { t:117, x:'我们以为的此刻' },
+      { t:125, x:'其实是别人的从前' },
+      { t:135, x:'——— 尾奏 ———' },
+    ],
+  ],
+};
+
+function buildMockBackend() {
+  var tracks = DEMO.tracks.map(function (t, i) {
+    return makeSong({ key: 'demo_' + i, name: t.t, singer: t.a, album: t.al, interval: t.d, source: 'demo', cover: t.c });
+  });
+  function sec(str) { var p = String(str || '0:00').split(':'); return (+p[0]) * 60 + (+p[1] || 0); }
+
+  var em = makeEmitter();
+  var st = {
+    index: 0, list: [], playing: false, time: 0,
+    mode: 2,                      // 0 顺序 · 1 随机 · 2 单曲/列表循环
+    liked: { demo_0: 1, demo_3: 1, demo_7: 1 },
+    history: ['周杰伦', '深夜电台', 'lofi 纯音乐', '陈鸿宇'],
+    timer: null,
+  };
+  var lists = {};   // token -> songs
+
+  /* 平台列表与真机桥保持同一套短名（酷我/酷狗/QQ/网易云/咪咕） */
+  var SOURCES = [
+    { id: 'all', name: '全部' },
+    { id: 'kw', name: '酷我' },
+    { id: 'kg', name: '酷狗' },
+    { id: 'tx', name: 'QQ' },
+    { id: 'wy', name: '网易云' },
+    { id: 'mg', name: '咪咕' },
+  ];
+  var PLATFORMS = SOURCES.slice(1);
+  st.searchSource = 'all';
+  st.chartSource = 'kw';
+  st.squareSource = 'kw';
+
+  function token(list) {
+    var t = 'tk' + (Object.keys(lists).length + 1);
+    lists[t] = list;
+    return t;
+  }
+  function songAt() { return st.list[st.index] || tracks[0]; }
+  function dur() { return sec(songAt().interval); }
+
+  function pushPlayer() {
+    em.emit('player', {
+      song: songAt(), isPlay: st.playing,
+      position: st.time, duration: dur(),
+      mode: st.mode, liked: !!st.liked[songAt().key],
+    });
+  }
+  function startTimer() {
+    if (st.timer) return;
+    st.timer = setInterval(function () {
+      if (!st.playing) return;
+      st.time += 0.25;
+      if (st.time >= dur()) st.time = 0;
+      em.emit('progress', { position: st.time, duration: dur() });
+    }, 250);
+  }
+
+  return {
+    name: 'mock',
+    /* 事件订阅必须落在后端自己的总线上，否则界面收不到播放状态 */
+    on: function (ev, fn) { em.on(ev, fn); },
+    /* v1.9.27：预览也模拟「冷启动恢复上次播放」——真机上内核 initPlayInfo 会恢复
+       playMusicInfo（暂停态、不自动出声），界面靠 init 返回的快照画迷你条。
+       这里给同样的快照，套件才能断言「打开就有上次那首、点播放续播」这条链。 */
+    init: function () {
+      st.list = tracks.slice(0, 6);
+      return Promise.resolve({
+        ok: true,
+        version: '1.9.32',
+        form: 'phone',
+        player: { song: songAt(), isPlay: false, position: 0, duration: dur(), mode: st.mode, liked: false },
+      });
+    },
+    /* 预览里没有更新源，直接回「已是最新」，让验收脚本也能点这一行 */
+    checkUpdate: function () {
+      return Promise.resolve({ ok: true, version: '1.9.32', latest: true, unknown: false, newVersion: '' });
+    },
+
+    home: function () {
+      var likes = tracks.slice(0, 6);
+      /* 真机上「猜你喜欢」是「收藏 + 榜单补足到 30 首」两步：home 先回本地的，
+         补足的那步稍后推 homeLikes 事件。预览里照做，好让验收脚本真走到那条路。 */
+      setTimeout(function () {
+        var out = [];
+        for (var i = 0; i < 30; i++) out.push(tracks[(i * 5 + 3) % tracks.length]);
+        em.emit('homeLikes', { songs: out, token: token(out) });
+      }, 120);
+      return Promise.resolve({
+        playlists: DEMO.playlists.map(function (p) { return { id: p.id, name: p.name, cover: p.c, meta: p.plays + ' 次播放' }; }),
+        likes: likes,
+        token: token(likes),
+      });
+    },
+    charts: function (source) {
+      window.__tideChartArgs = { source: source || '' };
+      return Promise.resolve(DEMO.charts.map(function (c, k) {
+        return { id: 'board:' + c.id, name: c.name, cover: c.c, meta: c.meta, tops: [tracks[k % 16].name, tracks[(k + 3) % 16].name, tracks[(k + 7) % 16].name] };
+      }));
+    },
+    /* 榜单封面按需补：预览里的封面是本地渐变块，没有要补的 */
+    chartCovers: function () { return Promise.resolve({ cached: 0, queued: 0 }); },
+    /* 与真实桥接保持同一套 id 约定：board: / sl: / ul: / love */
+    chartDetail: function (id) {
+      var raw = String(id).replace(/^board:/, '');
+      var c = DEMO.charts.filter(function (x) { return x.id === raw; })[0] || DEMO.charts[0];
+      var songs = [];
+      for (var i = 0; i < 14; i++) songs.push(tracks[(i * 3 + raw.length) % tracks.length]);
+      return Promise.resolve({
+        title: c.name, author: '在线榜单', desc: c.meta, cover: c.c,
+        /* 预览里没有真封面，但字段要有 —— 界面的头图逻辑按 img 判断 */
+        img: '',
+        songs: songs, token: token(songs),
+      });
+    },
+    library: function () {
+      return Promise.resolve({
+        my: DEMO.myPlaylists.map(function (p) { return { id: p.id, name: p.name, cover: p.c, meta: p.desc }; }),
+        fav: DEMO.favPlaylists.map(function (p) { return { id: p.id, name: p.name, cover: p.c, meta: p.desc }; }),
+        stats: { love: 428, lists: 12, downloads: 86, follows: 37 },
+      });
+    },
+    playlistDetail: function (id, sort) {
+      // 榜单走榜单逻辑，别当成歌单查（否则会兜底到第一个歌单）
+      if (String(id).indexOf('board:') === 0) return this.chartDetail(id);
+      var all = DEMO.myPlaylists.concat(DEMO.favPlaylists).concat(DEMO.playlists);
+      var p = all.filter(function (x) { return x.id === id; })[0] || all[0];
+      var songs = [];
+      for (var i = 0; i < 12; i++) songs.push(tracks[(i * 5 + String(id).length) % tracks.length]);
+      // 排序跟原生一样在数据侧做，下标才对得上
+      if (sort === 'name' || sort === 'singer') {
+        songs = songs.slice().sort(function (a, b) {
+          return String(a[sort] || '').localeCompare(String(b[sort] || ''), 'zh-Hans-CN');
+        });
+      }
+      return Promise.resolve({
+        title: p.name, author: '夜航西飞', desc: p.desc, cover: p.c,
+        img: '',
+        songs: songs, token: token(songs),
+      });
+    },
+    search: function (q, opts) {
+      opts = opts || {};
+      window.__tideSearchArgs = { source: opts.source || 'all', page: opts.page || 1 };
+      q = String(q || '').trim().toLowerCase();
+      var page = Math.max(1, Number(opts.page || 1));
+      if (!q) return Promise.resolve({ songs: [], token: '', page: page, total: 0, hasMore: false });
+      var hits = tracks.filter(function (t) {
+        return t.name.toLowerCase().indexOf(q) > -1 || t.singer.toLowerCase().indexOf(q) > -1 || t.album.toLowerCase().indexOf(q) > -1;
+      });
+      /* 第二页故意放两条「加载更多」演示歌，验收才能量到列表真的变长 */
+      var extra = page > 1 && hits.length ? [
+        { key: 'more_' + page + '_1', name: '加载更多结果 1', singer: '潮汐', album: '第二页', interval: '3:21', source: 'demo', cover: 'b' },
+        { key: 'more_' + page + '_2', name: '加载更多结果 2', singer: '潮汐', album: '第二页', interval: '2:58', source: 'demo', cover: 'c' },
+      ] : [];
+      var full = hits.concat(extra);
+      return Promise.resolve({
+        songs: full, token: token(full), page: page,
+        total: hits.length ? hits.length + 2 : 0,
+        hasMore: !!hits.length && page < 2,
+      });
+    },
+    /* 歌单搜索：真机是内核跨平台聚合，这里在演示曲库里按歌单名过滤。
+       返回形状与「歌单广场」一致（id 用 p1/p2… 这套，与演示数据对得上）。 */
+    searchPlaylists: function (q, opts) {
+      opts = opts || {};
+      window.__tideSearchListArgs = { source: opts.source || 'all', page: opts.page || 1 };
+      q = String(q || '').trim().toLowerCase();
+      var page = Math.max(1, Number(opts.page || 1));
+      if (!q) return Promise.resolve({ playlists: [], page: page, total: 0, hasMore: false });
+      var seen = {};
+      var all = DEMO.myPlaylists.concat(DEMO.favPlaylists).concat(DEMO.playlists);
+      var list = all.filter(function (p) {
+        if (seen[p.id]) return false;
+        seen[p.id] = 1;
+        return p.name.toLowerCase().indexOf(q) > -1;
+      }).map(function (p) {
+        return { id: p.id, name: p.name, cover: p.c, img: '', meta: p.plays ? p.plays + ' 次播放' : p.desc };
+      });
+      if (page > 1 && list.length) {
+        list = list.concat([{ id: 'sp_more_1', name: '加载更多歌单', cover: 'b', img: '', meta: '第二页' }]);
+      }
+      return Promise.resolve({
+        playlists: list, page: page, total: list.length, hasMore: !!list.length && page < 2,
+      });
+    },
+    /* 音源：形状与真机一致 —— 洛雪官方音源清单（api-source-info）是空的，
+       能用的都是「内置/导入」的脚本，所以 builtin 空、user 里是那几个内置源。
+       名字取自 tools/builtin-sources-src/ 里各脚本的 @name。 */
+    apiSources: function () { return Promise.resolve(previewApiSources()); },
+    /* 真机是「内核切完广播 apiSourceUpdated → 桥转成 apiSources 事件」，
+       预览里照做：切完推一次事件，让「界面自己更新」这条路也真被走到。 */
+    setApiSource: function (id) {
+      if (id) previewApiSources.state.active = id;
+      setTimeout(function () { em.emit('apiSources', previewApiSources()); }, 60);
+      return Promise.resolve({ ok: true });
+    },
+    /* 导入 / 删除音源：预览里没有真的文件选择器和下载，直接改上面那份单例，
+       并像真机一样推一次 apiSources 事件（真机是内核改完广播）。
+       两条错误分支也照真机给：地址不合法、以及地址里带 fail 时故意失败，
+       好让验收脚本真走到「红字提示」那条路。 */
+    importApiSourceUrl: function (url) {
+      var u = String(url || '').trim();
+      if (!/^https?:\/\//i.test(u)) return Promise.resolve({ ok: false, msg: '地址要以 http:// 或 https:// 开头' });
+      if (/fail/i.test(u)) return Promise.resolve({ ok: false, msg: '下载失败：预览里带 fail 的地址故意报错' });
+      var base = (u.split('/').pop() || 'online.js').replace(/\.js$/i, '') || 'online';
+      return Promise.resolve(addPreviewSource(base, '在线导入'));
+    },
+    importApiSourceFile: function () {
+      if (previewApiSources.fileCancel) {
+        previewApiSources.fileCancel = false;
+        return Promise.resolve({ ok: false, cancelled: true });
+      }
+      return Promise.resolve(addPreviewSource('本地导入音源', '本地文件'));
+    },
+    removeApiSource: function (id) {
+      var st = previewApiSources();
+      var left = st.user.filter(function (a) { return a.id !== id; });
+      previewApiSources.state.user = left;
+      if (previewApiSources.state.active === id) {
+        previewApiSources.state.active = left.length ? left[0].id : '';
+      }
+      var d = previewApiSources();
+      setTimeout(function () { em.emit('apiSources', d); }, 60);
+      return Promise.resolve({ ok: true, sources: d });
+    },
+    /* 搜索源 / 榜单平台 / 歌单平台：预览里只记录选择，真机由内核设置持久化 */
+    searchSources: function () {
+      return Promise.resolve({ sources: SOURCES, active: st.searchSource || 'all' });
+    },
+    setSearchSource: function (id) {
+      if (!SOURCES.some(function (s) { return s.id === id; })) return Promise.resolve({ ok: false });
+      st.searchSource = id;
+      window.__tideSearchSource = id;
+      return Promise.resolve({ ok: true });
+    },
+    chartSources: function () {
+      return Promise.resolve({ sources: PLATFORMS, active: st.chartSource || 'kw' });
+    },
+    setChartSource: function (id) {
+      if (!PLATFORMS.some(function (s) { return s.id === id; })) return Promise.resolve({ ok: false });
+      st.chartSource = id;
+      window.__tideChartSource = id;
+      return Promise.resolve({ ok: true });
+    },
+    squareSources: function () {
+      return Promise.resolve({ sources: PLATFORMS, active: st.squareSource || 'kw' });
+    },
+    setSquareSource: function (id) {
+      if (!PLATFORMS.some(function (s) { return s.id === id; })) return Promise.resolve({ ok: false });
+      st.squareSource = id;
+      window.__tideSquareSource = id;
+      return Promise.resolve({ ok: true });
+    },
+    hot: function () { return Promise.resolve(DEMO.hot); },
+    history: function () { return Promise.resolve(st.history.slice()); },
+    /* 搜索联想：真机是内核各平台的 tipSearch；预览里用演示曲库凑一批补全，
+       让「边打字边出联想词」这条路在预览里也是真的能走通。 */
+    tips: function (text, source) {
+      window.__tideTipsSource = source || 'all';
+      var q = String(text || '').trim().toLowerCase();
+      if (!q) return Promise.resolve([]);
+      var pool = [];
+      DEMO.tracks.forEach(function (t) {
+        pool.push(t.t, t.a, t.a + ' ' + t.t, t.al);
+      });
+      DEMO.hot.forEach(function (h) { pool.push(h.w); });
+      var seen = {}, out = [];
+      pool.forEach(function (w) {
+        if (!w || seen[w] || w.toLowerCase().indexOf(q) === -1) return;
+        seen[w] = 1;
+        out.push(w);
+      });
+      return Promise.resolve(out.slice(0, 12));
+    },
+    addHistory: function (w) {
+      st.history = [w].concat(st.history.filter(function (x) { return x !== w; })).slice(0, 8);
+      return Promise.resolve(st.history.slice());
+    },
+    clearHistory: function () { st.history = []; return Promise.resolve([]); },
+
+    play: function (tk, index) {
+      var list = lists[tk] || tracks.slice(0, 6);
+      st.list = list; st.index = Math.max(0, Math.min(list.length - 1, index || 0)); st.time = 0; st.playing = true;
+      startTimer(); pushPlayer();
+      return Promise.resolve();
+    },
+    toggle: function () { st.playing = !st.playing; startTimer(); pushPlayer(); return Promise.resolve(); },
+    next: function () { st.index = (st.index + 1) % st.list.length; st.time = 0; pushPlayer(); return Promise.resolve(); },
+    prev: function () { st.index = (st.index - 1 + st.list.length) % st.list.length; st.time = 0; pushPlayer(); return Promise.resolve(); },
+    seek: function (sec2) { st.time = Math.max(0, Math.min(dur(), sec2)); pushPlayer(); return Promise.resolve(); },
+    setMode: function (m) { st.mode = m; pushPlayer(); return Promise.resolve(); },
+    like: function (on) { if (on) st.liked[songAt().key] = 1; else delete st.liked[songAt().key]; pushPlayer(); return Promise.resolve(); },
+    queue: function () { return Promise.resolve(st.list.slice()); },
+    queuePlay: function (i) { st.index = i; st.time = 0; pushPlayer(); return Promise.resolve(); },
+    /* 清空队列：与内核同语义——待播全清，保留正在播的这首（bridge 端全清会
+       触发 watchList 的「歌曲被移除」链，立刻停播；预览里行为保持一致） */
+    queueClear: function () {
+      if (st.list.length) st.list = [st.list[Math.max(0, st.index)]];
+      window.__tideQueueClear = (window.__tideQueueClear || 0) + 1;
+      return Promise.resolve({ ok: true, kept: st.list.length });
+    },
+    lyrics: function () { return Promise.resolve(DEMO.lyrics[st.index % DEMO.lyrics.length]); },
+    toast: function (m) { em.emit('toast', { msg: m }); },
+    navState: function () {},
+    openNativeSettings: function () { em.emit('toast', { msg: '独立预览模式没有原生设置页' }); },
+    openNativePage: function () { em.emit('toast', { msg: '独立预览模式没有原生页面' }); },
+    /* 预览里记下最后一次推来的调色板：验收脚本据此确认「推对了颜色」，
+       不然这条链路（界面算色 → 桥 → 原生 token）在预览里是看不见的 */
+    theme: function (p) {
+      previewThemePayload.last = p || {};
+      return Promise.resolve({ ok: true });
+    },
+    /* 预览模式下这几件都不存在，给个说明性的反馈，别让按钮点了没动静 */
+    setBootBg: function () {},
+    /* 预览里没有悬浮窗，直接记下状态让验收能读到 */
+    setDesktopLyric: function (enable) {
+      st.desktopLyric = !!enable;
+      window.__tideDesktopLyric = st.desktopLyric;
+      return Promise.resolve({ ok: true });
+    },
+    /* 下载三件：预览里记下参数，并用事件模拟一条「开始→完成」链路，
+       验收脚本据此断言 toast 链路通（真机的进度/落盘在内核那头） */
+    downloadSong: function (args) {
+      window.__tideDownloadSong = args || { current: true };
+      var name = '预览歌曲';
+      setTimeout(function () { em.emit('download', { status: 'start', name: name, single: true, remain: 0 }); }, 30);
+      setTimeout(function () { em.emit('download', { status: 'done', name: name + '.mp3', single: true, remain: 0, size: 3400000 }); }, 260);
+      return Promise.resolve({ ok: true, count: 1 });
+    },
+    downloadList: function (args) {
+      window.__tideDownloadList = args || {};
+      /* 模拟的「逐首完成」事件推到 1.5s 以后：真机上它确实在后台慢慢跑，
+         而「已加入下载」的确认 toast 不该被第一条完成播报立刻顶掉 */
+      var names = ['预览歌曲一', '预览歌曲二', '预览歌曲三'];
+      names.forEach(function (n, i) {
+        setTimeout(function () { em.emit('download', { status: 'start', name: n, single: false, remain: names.length - 1 - i }); }, 1500 + i * 40);
+        setTimeout(function () { em.emit('download', { status: 'done', name: n + '.mp3', single: false, remain: names.length - 1 - i, size: 3200000 }); }, 1700 + i * 130);
+      });
+      return Promise.resolve({ ok: true, count: names.length });
+    },
+    /* 与 native 分支对齐：直接给文件数组（原来回整包 {ok,files}，界面拿到
+       的 length 是 undefined，表现成「我的下载永远是空态」） */
+    downloads: function () {
+      if (!st.downloadFiles) st.downloadFiles = [
+        { name: '预览歌曲一.mp3', size: 3200000, mtime: Date.now() - 60000 },
+        { name: '预览歌曲二.flac', size: 29800000, mtime: Date.now() },
+      ];
+      return Promise.resolve(st.downloadFiles.slice());
+    },
+    downloadDelete: function (name) {
+      window.__tideDownloadDelete = name;
+      st.downloadFiles = (st.downloadFiles || []).filter(function (f) { return f.name !== name; });
+      return Promise.resolve({ ok: true });
+    },
+    square: function (page, source) {
+      window.__tideSquareArgs = { page: page || 1, source: source || '' };
+      var p = Math.max(1, page || 1);
+      var out = [];
+      for (var i = 0; i < DEMO.playlists.length; i++) {
+        out.push(DEMO.playlists[(i + (p - 1) * 3) % DEMO.playlists.length]);
+      }
+      return Promise.resolve(out.map(function (x) {
+        return { id: x.id, name: x.name, cover: x.c, meta: x.plays + ' 次播放' };
+      }));
+    },
+    /* 预览模式的「每日推荐」：从演示曲库里按 shift 挪着取 30 首 */
+    daily: function (shift) {
+      var out = [];
+      for (var i = 0; i < 30; i++) out.push(tracks[(i * 5 + (shift || 0) * 3) % tracks.length]);
+      return Promise.resolve({
+        sub: '预览模式：来自「飙升榜」',
+        songs: out,
+        token: token(out),
+        canShuffle: true,
+      });
+    },
+    collectList: function () { return Promise.resolve('预览模式：已收藏歌单'); },
+    share: function () { return Promise.resolve('预览模式：已复制分享链接'); },
+    createPlaylist: function (name) { return Promise.resolve('预览模式：已创建歌单「' + name + '」'); },
+
+    /* 播放音效：预览里没有原生效果器，只维护一份状态让界面能正常点。
+       形状和真机完全一样（见 tide/bridge.ts 的 soundEffectPayload），
+       所以界面代码在两边走的是同一条路。 */
+    soundEffect: function () {
+      return Promise.resolve(previewSoundEffect());
+    },
+    soundEffectSet: function (patch) {
+      patch = patch || {};
+      var st = previewSoundEffect.state;
+      Object.keys(st).forEach(function (k) {
+        if (patch[k] !== undefined && patch[k] !== null) st[k] = patch[k];
+      });
+      return Promise.resolve(previewSoundEffect());
+    },
+  };
+}
+
+/* 预览用的调色板记录（界面推给原生的那一组，见 mock 的 theme） */
+var previewThemePayload = { last: null };
+
+/* 预览用的音源列表（单例，跨调用保留「当前选中的是哪个」）。
+   名字与真机内置的那几个一致，见 src/harmony/builtinSources/index.ts。 */function previewApiSources() {
+  var st = previewApiSources.state || (previewApiSources.state = {
+    active: 'user_api_preview_1',
+    builtin: [],
+    user: [
+      { id: 'user_api_preview_1', name: 'HYWmusic_beta_公益测试', version: 'v0.74.0', desc: '' },
+      { id: 'user_api_preview_2', name: '星海音乐源', version: 'v3.2.15', desc: '' },
+      { id: 'user_api_preview_3', name: 'lx-玉宁熙-Pro', version: 'v1.2.2', desc: '' },
+      { id: 'user_api_preview_4', name: '屿溪-终章', version: '0.0.0', desc: '' },
+      { id: 'user_api_preview_5', name: 'helloworld', version: '260809', desc: '' },
+    ],
+  });
+  return { active: st.active, builtin: st.builtin, user: st.user };
+}
+
+/* 预览里「装了一个音源」：往单例里加一条并广播，返回给调用方的形状与真机一致 */
+function addPreviewSource(name, desc) {
+  var cur = previewApiSources();   // 先保证 state 已建好
+  var st = previewApiSources.state;
+  st.seq = (st.seq || 0) + 1;
+  st.user = st.user.concat([{ id: 'user_api_preview_n' + st.seq, name: name, version: 'v1.0.0', desc: desc }]);
+  var d = previewApiSources();
+  setTimeout(function () { em.emit('apiSources', d); }, 60);
+  return { ok: true, sources: d };
+}
+
+/* 预览用的播放音效状态（单例，跨调用保留） */
+function previewSoundEffect() {
+  var st = previewSoundEffect.state || (previewSoundEffect.state = {
+    enabled: true, preset: -1, bassBoost: 0, virtualizer: 0, loudness: 0, reverb: 0,
+  });
+  return {
+    loaded: true,
+    available: true,
+    reason: '',
+    enabled: st.enabled,
+    preset: st.preset,
+    bassBoost: st.bassBoost,
+    virtualizer: st.virtualizer,
+    loudness: st.loudness,
+    reverb: st.reverb,
+    reverbOptions: [0, 1, 2, 3, 5, 6],
+    supports: { equalizer: true, bassBoost: true, virtualizer: true, loudness: true, reverb: true },
+    groups: [
+      { id: 'device', name: '设备预设', credit: '手机系统自带', presets: previewPresets(PREVIEW_DEVICE, 0) },
+      { id: 'vlc', name: '经典均衡', credit: 'VLC 经典预设（LGPL-2.1+）',
+        presets: previewPresets(PREVIEW_VLC, PREVIEW_DEVICE.length) },
+      { id: 'autoeq', name: '耳机校正', credit: 'AutoEq 耳机校正曲线（MIT）· 挑自己的型号',
+        presets: previewPresets(PREVIEW_AUTOEQ, PREVIEW_DEVICE.length + PREVIEW_VLC.length) },
+    ],
+  };
+}
+
+/* ═════════════════════ 后端二：洛雪内核桥接 ═════════════════════ */
+
+function buildNativeBackend() {
+  var em = makeEmitter();
+  var pending = {};
+  var seq = 0;
+
+  function call(cmd, args) {
+    return new Promise(function (resolve, reject) {
+      var id = 'r' + (++seq);
+      pending[id] = { resolve: resolve, reject: reject };
+      window.ReactNativeWebView.postMessage(JSON.stringify({ id: id, cmd: cmd, args: args || {} }));
+      setTimeout(function () {
+        if (pending[id]) { delete pending[id]; reject(new Error('bridge timeout: ' + cmd)); }
+      }, 20000);
+    });
+  }
+
+  /* 不需要回执的命令（导航状态、请求打开原生页面） */
+  function fire(cmd, args) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ cmd: cmd, args: args || {} }));
+  }
+
+  /* RN 侧通过 injectJavaScript 调这里 */
+  window.TideNative = {
+    reply: function (id, ok, data) {
+      var p = pending[id];
+      if (!p) return;
+      delete pending[id];
+      ok ? p.resolve(data) : p.reject(new Error(data && data.message || 'bridge error'));
+    },
+    event: function (name, payload) {
+      if (name === 'player') payload.song = payload.song ? makeSong(payload.song) : null;
+      if (name === 'queue') payload.songs = (payload.songs || []).map(makeSong);
+      em.emit(name, payload);
+    },
+  };
+
+  function songsOf(list) { return (list || []).map(makeSong); }
+
+  return {
+    name: 'native',
+    on: function (ev, fn) { em.on(ev, fn); },
+    init: function () { return call('init'); },
+    /* 检查更新：原生会弹自己的更新窗口（检查/下载/安装都在那边），
+       这里返回结果给界面显示「已是最新 / 新版本 vX」 */
+    checkUpdate: function () { return call('checkUpdate'); },
+
+    home: function () {
+      return call('home').then(function (r) {
+        return { playlists: r.playlists || [], likes: songsOf(r.likes), token: r.token };
+      });
+    },
+    charts: function (source) { return call('charts', { source: source || '' }).then(function (r) { return r.charts || []; }); },
+    /* 榜单封面按需补：只把看得见的那几张发给内核，没缓存的内核后台取、取好推事件 */
+    chartCovers: function (o) { return call('chartCovers', { ids: (o && o.ids) || [] }); },
+    chartDetail: function (id) { return call('chartDetail', { id: id }).then(normalizeDetail); },
+    library: function () { return call('library'); },
+    playlistDetail: function (id, sort) { return call('playlistDetail', { id: id, sort: sort || '' }).then(normalizeDetail); },
+    search: function (q, opts) {
+      opts = opts || {};
+      return call('search', { text: q, source: opts.source || '', page: opts.page || 1 })
+        .then(function (r) {
+          return {
+            songs: songsOf(r.songs), token: r.token,
+            page: r.page || opts.page || 1,
+            total: r.total || 0,
+            hasMore: !!r.hasMore,
+          };
+        });
+    },
+    /* 歌单搜索（搜索页的「歌单」页签）。返回的形状与「歌单广场」一致，
+       所以卡片与详情页都能直接复用 */
+    searchPlaylists: function (q, opts) {
+      opts = opts || {};
+      return call('searchPlaylists', { text: q || '', source: opts.source || '', page: opts.page || 1 })
+        .then(function (r) {
+          return {
+            playlists: (r && r.playlists) || [],
+            page: (r && r.page) || opts.page || 1,
+            total: (r && r.total) || 0,
+            hasMore: !!(r && r.hasMore),
+          };
+        });
+    },
+    /* 搜索源 / 榜单平台 / 歌单平台：内核设置是唯一真源，原生页与潮汐共用 */
+    searchSources: function () { return call('searchSources'); },
+    setSearchSource: function (id) { return call('setSearchSource', { id: id || '' }); },
+    chartSources: function () { return call('chartSources'); },
+    setChartSource: function (id) { return call('setChartSource', { id: id || '' }); },
+    squareSources: function () { return call('squareSources'); },
+    setSquareSource: function (id) { return call('setSquareSource', { id: id || '' }); },
+    /* 音源：当前选中的 + 可选列表（内置的 + 用户导入的） */
+    apiSources: function () { return call('apiSources'); },
+    setApiSource: function (id) { return call('setApiSource', { id: id || '' }); },
+    importApiSourceUrl: function (url) { return call('importApiSourceUrl', { url: url || '' }); },
+    importApiSourceFile: function () { return call('importApiSourceFile', {}); },
+    removeApiSource: function (id) { return call('removeApiSource', { id: id || '' }); },
+    hot: function () { return call('hot').then(function (r) { return r.hot || []; }); },
+    history: function () { return call('history').then(function (r) { return r.history || []; }); },
+    /* 搜索联想词。平台不支持时内核回空数组，界面用本地历史 + 热搜兜底 */
+    tips: function (text, source) { return call('tips', { text: text || '', source: source || '' }).then(function (r) { return (r && r.tips) || []; }); },
+    addHistory: function (w) { return call('addHistory', { word: w }).then(function (r) { return r.history || []; }); },
+    clearHistory: function () { return call('clearHistory').then(function () { return []; }); },
+
+    play: function (tk, index) {
+      return call('play', { token: tk, index: index }).then(function (r) {
+        /* 内核说「放不了」的时候要抛出去：原来 resolve 掉，界面拿到 undefined
+           就什么都不做，表现成「点了没反应」。带 tideUser 标记的才允许
+           直接显示给用户（其余是超时之类的技术错误，界面会换成一句人话）。 */
+        if (r && r.ok === false) {
+          var e = new Error(r.msg || '这个列表还是空的');
+          e.tideUser = true;
+          throw e;
+        }
+        return r;
+      });
+    },
+    toggle: function () { return call('toggle'); },
+    next: function () { return call('next'); },
+    prev: function () { return call('prev'); },
+    seek: function (sec2) { return call('seek', { sec: sec2 }); },
+    setMode: function (m) { return call('setMode', { mode: m }); },
+    like: function (on) { return call('like', { on: !!on }); },
+    queue: function () { return call('queue').then(function (r) { return songsOf(r.songs); }); },
+    queuePlay: function (i) { return call('queuePlay', { index: i }); },
+    queueClear: function () { return call('queueClear'); },
+    /* 歌曲下载：current=当前在播的歌；token+index=列表里的一首；
+       downloadList=整张列表逐首串行入队（内核按 IP 限流的规矩，绝不并发） */
+    downloadSong: function (args) { return call('downloadSong', args || {}); },
+    downloadList: function (args) { return call('downloadList', args || {}); },
+    downloads: function () { return call('downloads').then(function (r) { return (r && r.files) || []; }); },
+    downloadDelete: function (name) { return call('downloadDelete', { name: name || '' }); },
+    lyrics: function () { return call('lyrics').then(function (r) { return parseLrc(r.lrc, r.tlrc); }); },
+    toast: function (m) { fire('toast', { msg: m }); },
+    navState: function (canBack) { fire('navState', { canBack: !!canBack }); },
+    openNativeSettings: function () { fire('openNativePage', { page: 'settings' }); },
+    openNativePage: function (page) { fire('openNativePage', { page: page }); },
+    /* 把深浅 + 算好的那组颜色推给原生，原生子页面（含洛雪原生设置）才不会白一块、
+       也不会是一套固定的绿（见 app.js 的 syncNativeTheme） */
+    theme: function (p) { return call('theme', p || {}).then(function (r) { return r || {}; }); },
+
+    /* 把当前主题的底色 + 主题模式同步给原生：下次启动时启动窗口/根视图用它上色。
+       模式必须一起给 —— 「跟随系统」时颜色会随系统变，存的那份可能已经过期。
+       即发即忘 —— 记不住颜色最多是启动时闪一下，不值得为它挡流程。 */
+    setBootBg: function (hex, mode) { fire('bootBg', { color: hex, mode: mode || '' }); },
+    /* 桌面歌词：真机走原生的悬浮窗（权限没给时原生去开系统设置，回 ok:false） */
+    setDesktopLyric: function (enable) { return call('setDesktopLyric', { enable: !!enable }); },
+
+    /* 歌单广场翻页（首页「为你精选 · 全部」用） */
+    square: function (page, source) {
+      return call('square', { page: page || 1, source: source || '' }).then(function (r) { return r.playlists || []; });
+    },
+    /* 每日推荐：内核按日期从榜单里挑 30 首，shift 就是「换一批」 */
+    daily: function (shift) {
+      return call('daily', { shift: shift || 0 }).then(function (r) {
+        return {
+          sub: r.sub || '',
+          songs: songsOf(r.songs),
+          token: r.token,
+          canShuffle: r.canShuffle !== false,
+        };
+      });
+    },
+    /* 收藏整张歌单/榜单到「我收藏的歌单」 */
+    collectList: function (id, name) {
+      return call('collectList', { id: id, name: name }).then(function (r) { return r && r.msg; });
+    },
+    /* 分享：kind='song' 分享当前播放，kind='list' 分享歌单 */
+    share: function (kind, payload) {
+      return call('share', { kind: kind, id: (payload && payload.id) || '', title: (payload && payload.title) || '' })
+        .then(function (r) { return r && r.msg; });
+    },
+    createPlaylist: function (name) {
+      return call('createPlaylist', { name: name }).then(function (r) { return r && r.msg; });
+    },
+    /* 播放音效（均衡器 / 低音增强 / 环绕声 / 响度增强 / 环境混响）。
+       读一次会把设备能力、频段布局、可选预设一起带回来；改只传要改的字段，返回改完的最新状态。 */
+    soundEffect: function () { return call('soundEffect'); },
+    soundEffectSet: function (patch) { return call('soundEffectSet', patch || {}); },
+  };
+  function normalizeDetail(r) {
+    /* 不按白名单重建：漏列的字段会被静默丢掉，img（头图封面）就这么丢过一次，
+       表现是「原生明明给了封面，界面头图还是渐变」。只换 songs、补默认值，其余原样带过。 */
+    return Object.assign({}, r, {
+      cover: r.cover || 'c',
+      img: r.img || '',
+      songs: songsOf(r.songs),
+    });
+  }
+}
+
+/* ═════════════════════ 门面 ═════════════════════ */
+
+/* 预览用的播放音效预设名单：**只有名字**，曲线在内核里（src/utils/soundEffectPresets.ts）。
+   名字和顺序跟那边保持一致，这样预览里看到的条数、换行、分组和真机一样。
+   下标也要对上：设备预设 0-9、经典 10-27、耳机 28 起。 */
+var PREVIEW_DEVICE = ['标准','古典','舞曲','原声','民谣','重金属','嘻哈','爵士','流行','摇滚'];
+var PREVIEW_VLC = ['平坦','古典','俱乐部','舞曲','重低音','高低音增强','清澈高音','耳机','大厅','现场',
+  '派对','流行','雷鬼','摇滚','斯卡','轻柔','柔摇滚','电子'];
+var PREVIEW_AUTOEQ = ['索尼 WH-1000XM5','索尼 WH-1000XM4','索尼 WH-1000XM3','索尼 WF-1000XM4',
+  '森海塞尔 HD 600','森海塞尔 HD 650','AKG K371','拜雅 DT 770 Pro','飞利浦 SHP9500','海菲曼 HE400se',
+  '苹果 AirPods Max','苹果 AirPods Pro','三星 Galaxy Buds Pro','三星 Galaxy Buds2 Pro',
+  '水月雨 Aria','水月雨 Chu','水月雨 Blessing 2','7Hz Salnotes Zero','Truthear x Crinacle Zero'];
+
+/* 把一段名字拼成 {index, name}，起始下标接着前面排 */
+function previewPresets(names, from) {
+  return names.map(function (n, i) { return { index: from + i, name: n }; });
+}
+
+var isNative = !!(window.ReactNativeWebView && window.ReactNativeWebView.postMessage);
+var backend = isNative ? buildNativeBackend() : buildMockBackend();
+
+var Tide = {
+  isNative: isNative,
+  backend: backend.name,
+  init: function () { return backend.init(); },
+  /* 事件统一订阅到当前后端的总线 */
+  on: function (ev, fn) { backend.on(ev, fn); },
+  _parseLrc: parseLrc,
+  _makeSong: makeSong,
+  /* 预览专用：界面最近一次推给原生的那组颜色。这条链路（界面算色 → 桥 → 原生 token）
+     在 Web 预览里本来完全看不见，验收脚本靠它确认「推对了颜色」。真机没有这个。 */
+  _lastTheme: isNative ? null : function () { return previewThemePayload.last; },
+};
+
+/* 把后端方法原样挂到门面上 */
+['home','charts','chartCovers','chartDetail','library','playlistDetail','search','searchPlaylists','hot','tips',
+  'checkUpdate',
+  'history','addHistory','clearHistory','play','toggle','next','prev','seek',
+  'setMode','like','queue','queuePlay','queueClear','lyrics','toast','navState',
+  'downloadSong','downloadList','downloads','downloadDelete',
+  'openNativeSettings','openNativePage','setBootBg','setDesktopLyric','square','daily','collectList','share',
+  'createPlaylist','theme','soundEffect','soundEffectSet','apiSources','setApiSource',
+  'searchSources','setSearchSource','chartSources','setChartSource','squareSources','setSquareSource',
+  'importApiSourceUrl','importApiSourceFile','removeApiSource'].forEach(function (m) {
+  Tide[m] = function () { return backend[m].apply(backend, arguments); };
+});
+
+window.Tide = Tide;
+})();
