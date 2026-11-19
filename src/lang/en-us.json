@@ -515,7 +515,7 @@
   "version_label_latest_ver": "Latest: ",
   "version_tip_checking": "Checking for updates...⏳",
   "version_tip_downloaded": "The apk has been downloaded.",
-  "version_tip_failed": "Failed to download the apk. You can either retry or go to the project address and download the new update manually.",
+  "version_tip_failed": "Download failed after trying all sources. Tap Retry, or use the link below to download in a browser.",
   "version_tip_latest": "The app is up to date, please enjoy it~🥂",
   "version_tip_min": "The download has been switched to background. You can navigate to \"Settings → Update\" to re-open this pop-up window.",
   "version_tip_unknown": "Failed to get the latest version information. Recommended to manually go to the project address to check for a new version.",
@@ -526,7 +526,8 @@
   "version_title_latest": "🎉 The current version is already the latest 🎊",
   "version_title_new": "🌟 New version found 🌟",
   "version_title_unknown": "❓ Failed to get the latest version information ❓",
-  "version_title_update": "🚀 App update 🚀"
+  "version_title_update": "🚀 App update 🚀",
+  "version_manual_download": "👉 Open webpage to download manually"
 ,
   "setting_basic_sound_effect": "Sound effect",
   "sound_effect_enable": "Enable sound effect",

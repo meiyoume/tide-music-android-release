@@ -1862,6 +1862,103 @@ python tools\tide-device.py shot 03-sort-name  # 截图到 shots/dev-*.png
   音源页立刻变成「正在读取…」+ 0 个源，预览套件当场红了一片。改成
   `platformName` 才好。命名冲突在 JS 里不报错，只有测试能兜住。
 
+### 更新下载提速 + 更新弹窗重做（v1.9.35；v1.9.34 是同一轮首版、已作废）
+
+用户原话：「下载界面超级慢 还很容易失败 下载界面也很难看」，附手机截图：弹窗里一屏
+**裸 Markdown**（`##`、`**`、反引号原样露出来）、长说明把进度挤到看不见、158 KB/s
+下到 2.66 MiB / 14.32 MiB（18.61%）。
+
+**1. 下载前并发测速择优**（`probeSpeed`，`src/utils/version.js`）
+- 对 manifest 里的每个源（官方直连 + 两个 ghproxy）并发下一个 300KB 的 `Range` 段，
+  实测 B/s，从快到慢排序后再下整包。慢源不再挡路：以前是「按数组顺序试」，
+  第一个源 158 KB/s 用户就得跟着等十几分钟。
+- 每个源独立临时文件（`tide-probe-<i>.tmp`）——并发写同一个路径会互相覆盖，测出来不准。
+- 300KB 或 5 秒任一先到就停；不可达的源记 0 分排到最后。
+- 下载失败立刻换下一个源（`unlink` 残包 → 下一个），超时收紧到连接 10s / 读 20s。
+- 每个源落盘后校验 `size` + `sha256`，不符抛「校验失败：内容与官方发布不一致，已丢弃」。
+
+**2. 更新弹窗重做**（`VersionModal.tsx` + 新增 `src/utils/markdown.tsx`）
+- 自写零依赖 Markdown 渲染（复用已有的 `he` 解实体）：`#`–`######` 标题、`**加粗**`、
+  `` `行内代码` ``、`-`/`*` 列表、空行间距。裸符号不再露出来。
+- `Content` 加 `compact`：**下载中只显示两行版本号**，长说明整段折叠，把空间让给进度。
+- 新增**真实进度条**（6px 圆角，按 `progress.current/total` 填充）+ 百分比与 MiB 文本。
+- 下载中 / 失败都显示「👉 打开网页手动下载」（`openReleasePage()` → Linking；
+  i18n 三语加 `version_manual_download`）。
+
+**3. 一个真 bug：manifest 地址拼成了 `version.jsont=...`**
+- 起因：raw / ghproxy 会按路径缓存 `version.json`，换 manifest 后老用户几小时拿不到新内容
+  （实测 GitHub Contents API 已是新内容，raw 还在吐旧版），所以要加缓存击穿参数。
+- 第一版写成 `const bust='?t='+…; base + (base.includes('?')?'&':'') + bust.slice(1)`，
+  `slice(1)` 把 `?` 切掉了 → URL 变成 `…/version.json` + `t=…` 粘连，manifest 全源失败，
+  关于页显示「检查失败」。改成 `bust='t='+…` + `(base.includes('?')?'&':'?')` 后正常。
+- **v1.9.34 的 Release 资产是修复前打的包，已作废**；线上 manifest 直接指向 v1.9.35。
+
+**4. 设备实测（x86_64 模拟器 + 本地 mock 更新源）**
+- 起 `tools/_mock-server.mjs`（8899，APK 限速 300KB/s、测速探针 ≤512KB 全速返回，
+  免得限速把测速排序带偏），manifest 指向 `10.0.2.2:8899`，装 1.9.34 测试包。
+- 更新弹窗自动弹出：Markdown 标题/加粗/行内代码/列表全部正确渲染。
+- 点「更新」后截到中间态：绿色进度条约 10%，「正在努力下载中... 1.57 MiB/14.63 MiB
+  (10.74%)」，长说明已折叠、只剩两行版本号，下方「打开网页手动下载」+「后台下载/安装」。
+- 完整下载过 sha256 校验并调起系统安装器（模拟器拒绝未知来源，属预期）。
+- 中途把 mock 的 sha256 写成旧包的值，客户端确实丢弃并切下一个源 —— 校验链路有效。
+
+**5. 发版**
+- Release v1.9.35：`TideMusic-v1.9.35-arm64.apk`（15,013,619 B，
+  `fd811f64b77ffad3b98f3656332644eabfd34d9f0b513d6702a884b59a79353c`）、
+  `TideMusic-Pad-v1.9.35-arm64.apk`（15,013,628 B，
+  `a36979086fba868cf768fd94593d1ac4282a4a741f4d60393c755544463dae5c`）。
+- 线上 `version.json` 已覆盖成 1.9.35（此前测试期间一度是伪造的 1.9.99，已清掉），
+  三个 manifest 源实测都能取到新内容；GitHub API 的资产 `digest` 与 manifest 逐字节一致。
+
+### 国内更新源加固 / manifest 驱动（v1.9.33）
+
+用户问「主要国内用 会不会下载很慢」「主要别人也要用啊」，并指了「新闻重构2」
+（= `D:\anzhuang\新闻配音重构\`，源码在 `draft-a8ffe8e8…/news_dub`）说「这个项目就做了国内源」。
+照搬它的做法，把更新链路从「写死 GitHub Releases API」改成 **manifest 驱动**。
+
+**新闻那套的核心**（`app/config.py` + `app/updater.py`，已读源码）：
+- 更新源是一个可配置的 `version.json`：`{version, notes, zip, mirrors:[], sha256, size}`。
+- manifest 地址本身走多镜像：`ghproxy.net` → `gh-proxy.com` → `raw.githubusercontent.com`
+  依次试（国内 raw 常被墙，ghproxy 抽风就退下一个）。
+- 下载包按 `zip` → `mirrors` 逐个试，每个都校验 size + sha256，坏包/篡改包丢弃换源。
+- **精髓**：下载地址全在 json 里，换源只改 json，老用户不用装新版。
+
+**本版照搬**：`src/utils/version.js` 整份重写——
+- manifest 放本仓库 main 根目录 `version.json`；App 只写死 manifest 地址
+  （`ghproxy.net/` → `gh-proxy.com/` → raw 直连三个前缀）。
+- `getVersionInfo()` 先读 manifest（取 version/notes/history），**失败自动回退** GitHub
+  Releases API（老链路），不会因为一个 json 抽风就完全查不了更新。
+- manifest 结构：`{version, notes, history:[{version,notes}], apk:{phone:{url,mirrors,sha256,size}, tablet:{…}}}`。
+- `downloadNewVersion()` 从 manifest 取对应 flavor 的 apk 配置，按 `url` → `mirrors`
+  逐个下载，每个校验 `stat().size` + `hash(path,'sha256')`（`react-native-file-system`
+  的 `hash` 支持 sha256），全失败才抛错。
+- 更新弹窗错误态加「打开网页手动下载」链接（`openReleasePage()` → Linking），
+  i18n 三语都加了 `version_manual_download`。
+
+**下载源顺序（按本机实测，2026-11-18）**：
+| 源 | 速度 |
+| --- | --- |
+| GitHub 官方 asset（302 到 release-assets CDN） | 470 KB/s，**最快** |
+| ghproxy.net | 168 KB/s |
+| gh-proxy.com | 121 KB/s |
+| manifest 三个源 | 都 200，2094B |
+
+所以 manifest 里 `url` 放 GitHub 官方直连、`mirrors` 放两个 ghproxy 兜底——
+官方直连在国内大多可用且最快，ghproxy 只是「别人网络不通官方时」的后备。
+**没掺第三方镜像做首选**：下的是安装包，镜像随时挂且过第三方手里有篡改风险，
+但即便走了镜像也有 sha256 兜底。
+
+**发版流程变化**（以后换下载源不用发版）：
+1. 改代码只改 App 行为时照旧 bump + 打包 + 发 Release。
+2. **只换下载地址/版本说明**：直接改仓库 main 的 `version.json`（PUT），
+   把新的 `sha256`/`size`/`url` 填进去——老用户下次检查更新就走新地址。
+3. manifest 里的 sha256/size 必须与 Release 资产**逐字节一致**，否则客户端会
+   `校验失败，已丢弃` 并换下一个源（这正是防护）。核对命令见 `build-staging/version-*.json`。
+
+**端到端已核对**：manifest 三源都 200 且线上==本地；v1.9.33 两个 Release 资产的
+size/sha256 与 manifest 完全一致；两个 APK bundle 都含 `version.json`/`ghproxy.net`/`sha256`
+逻辑。
+
 ### 应用内更新 + 自己的 Release 仓库（v1.9.32）
 
 用户要求「把软件放我仓库里 软件也要有应用内更新功能」。
@@ -2274,14 +2371,16 @@ SwiftShader 崩掉**（search 流程不崩=页面没有重型合成层）。把
 
 **当前最新**（v1.9.28 起是**两个包**，手机版 + 平板版，桌面各留一个）：
 
-- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.32.apk`（14.31 MB，
-  SHA256 `DB8BED3CEAECE1D42E77A004BB66F3C495700F26439DCC566BA8CF3B30450AD3`，
+- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.35.apk`（14.32 MB，
+  SHA256 `FD811F64B77FFAD3B98F3656332644EABFD34D9F0B513D6702A884B59A79353C`，
   安装身份 `cn.toside.music.mobile.harmony`，桌面名「潮汐音乐」）
-- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.32.apk`（14.31 MB，
-  SHA256 `02D04CA96C2F48CE39E102D0AB3A2E4BB603203F683122441546CA1E223949C7`，
+- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.35.apk`（14.32 MB，
+  SHA256 `A36979086FBA868CF768FD94593D1AC4282A4A741F4D60393C755544463DAE5C`，
   安装身份 `cn.toside.music.mobile.harmony.tablet`，桌面名「潮汐音乐 Pad」）
-- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.32>
-  （两个资产名见正文「应用内更新」段；手机装的是手机包、平板装平板包）
+- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.35>
+  （资产 `TideMusic-v1.9.35-arm64.apk` / `TideMusic-Pad-v1.9.35-arm64.apk`；
+  手机装手机包、平板装平板包）
+- 更新 manifest：<https://raw.githubusercontent.com/meiyoume/tide-music-android-release/main/version.json>
 
 > 2026-11-18 起所有 AI 做的安装包统一放 `桌面\ai做的安装包\`，**每次交付只留该产品最新版**
 > （`deliver-arm64.py` 复制完就删同系列旧包；手动清理用 `tools/prune-delivered-apks.py`，
@@ -2294,6 +2393,18 @@ v1.9.15 = 14.31 MB，`8BEA1C29…`；v1.9.14 = 14.31 MB，`B1D064A2…`；
 v1.9.13 = 14.31 MB，`6A2EF87E…`；v1.9.12 = 14.30 MB，`564D954D…`；
 v1.9.8 = 14.54 MB，`5F871B11…`；v1.9.11 = 14.29 MB，`D8AAA0AD…`。
 旧包按用户要求清掉了。）
+
+> v1.9.35 = 更新下载提速 + 弹窗重做：下载前对每个源**并发测速择优**（官方直连/两个 ghproxy
+> 各探 300KB，按实测速度排序），失败立刻换源、每源校验 size+sha256；更新说明改**自写
+> Markdown 渲染**，下载中**折叠长说明**只留版本号 + **真实进度条**，下载中/失败都有
+> 「打开网页手动下载」。修掉 manifest 缓存击穿参数把 URL 拼成 `version.jsont=...` 的 bug
+> （v1.9.34 为此作废）。改完两个包重打交付，模拟器 + mock 源验到进度条 10.74% 与
+> sha256 校验拒收坏包。`version.json` 已指向 1.9.35。
+
+> v1.9.33 = 国内更新源加固：照搬「新闻配音重构」的 manifest 方案，更新改读仓库的
+> `version.json`（下载地址和校验值全在里面，换源只改 json 不用发版）；manifest 与 APK
+> 都走多镜像（官方直连优先 + ghproxy 后备）并校验 size/sha256；失败弹窗加「手动下载」。
+> 实测 GitHub 官方 asset 直连 470KB/s 最快，ghproxy 120–170KB/s 兜底。两个包重打交付。
 
 > v1.9.32 = 应用内更新 + 自己的 Release 仓库（`meiyoume/tide-music-android-release`）：
 > 「我的 → 关于」显示真实版本并多一行「检查更新」，启动时也自动查一次；

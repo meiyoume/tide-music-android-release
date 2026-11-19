@@ -2,9 +2,10 @@ import { useMemo, useState, useEffect, memo } from 'react'
 import { View, ScrollView } from 'react-native'
 
 import { compareVer, sizeFormate } from '@/utils'
+import { renderMarkdown } from '@/utils/markdown'
 
 import Button from '@/components/common/Button'
-import { updateApp } from '@/utils/version'
+import { openReleasePage, updateApp } from '@/utils/version'
 import { createStyle } from '@/utils/tools'
 import { useTheme } from '@/store/theme/hook'
 import { type VersionInfo } from '@/store/version/state'
@@ -18,14 +19,16 @@ const VersionItem = ({ version, desc }: VersionInfo) => {
   return (
     <View style={styles.versionItem}>
       <Text style={styles.label}>v{version}</Text>
-      <Text selectable style={styles.desc}>{desc}</Text>
+      <View style={styles.mdWrap}>{renderMarkdown(desc)}</View>
     </View>
   )
 }
 
-const Content = memo(({ title, newVersionInfo }: {
+/** 下载中只留一行说明，避免长篇 Markdown 糊满屏盖住进度 */
+const Content = memo(({ title, newVersionInfo, compact }: {
   title: string
   newVersionInfo: VersionInfo | null
+  compact?: boolean
 }) => {
   const t = useI18n()
 
@@ -41,23 +44,23 @@ const Content = memo(({ title, newVersionInfo }: {
   return (
     <View style={styles.main}>
       <Text style={styles.title}>{title}</Text>
-      <ScrollView style={styles.content} keyboardShouldPersistTaps={'always'}>
+      <ScrollView style={compact ? styles.contentCompact : styles.content} keyboardShouldPersistTaps={'always'}>
         <Text style={styles.label}>{t('version_label_latest_ver')}{newVersionInfo?.version}</Text>
         <Text style={styles.label}>{t('version_label_current_ver')}{currentVer}</Text>
         {
-          newVersionInfo?.desc
+          !compact && newVersionInfo?.desc
             ? (
                 <View>
                   <Text style={styles.label}>{t('version_label_change_log')}</Text>
-                  <View style={{ paddingLeft: 10, marginTop: 5 }}>
-                    <Text selectable style={styles.desc}>{newVersionInfo.desc}</Text>
+                  <View style={styles.mdWrap}>
+                    {renderMarkdown(newVersionInfo.desc)}
                   </View>
                 </View>
               )
             : null
         }
         {
-          history.length
+          !compact && history.length
             ? (
                 <View style={styles.history}>
                   <Text style={styles.label}>{t('version_label_history')}</Text>
@@ -175,8 +178,26 @@ const VersionModal = ({ componentId }: { componentId: string }) => {
 
   return (
     <ModalContent>
-      <Content title={title} newVersionInfo={versionInfo.newVersion} />
+      <Content title={title} newVersionInfo={versionInfo.newVersion} compact={versionInfo.status === 'downloading'} />
+      {
+        versionInfo.status === 'downloading'
+          ? (
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${progress.total ? Math.min(progress.current / progress.total * 100, 100) : 0}%`, backgroundColor: theme['c-primary'] }]} />
+              </View>
+            )
+          : null
+      }
       { tip.length ? <Text style={styles.tip} color={theme['c-primary-font']}>{tip}</Text> : null }
+      {
+        (versionInfo.status === 'error' || versionInfo.status === 'downloading') && !versionInfo.isUnknown
+          ? (
+              <Text onPress={() => void openReleasePage()} style={styles.manualLink} color={theme['c-primary-font']}>
+                {t('version_manual_download')}
+              </Text>
+            )
+          : null
+      }
       <View style={styles.btns}>
         {
           ignoreBtn.show
@@ -215,6 +236,28 @@ const styles = createStyle({
   },
   content: {
     flexGrow: 0,
+    maxHeight: 380,
+  },
+  contentCompact: {
+    flexGrow: 0,
+    maxHeight: 70,
+  },
+  mdWrap: {
+    marginTop: 5,
+    paddingLeft: 4,
+  },
+  progressTrack: {
+    height: 6,
+    marginLeft: 15,
+    marginRight: 15,
+    marginBottom: 12,
+    borderRadius: 3,
+    backgroundColor: 'rgba(128,128,128,.25)',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: 6,
+    borderRadius: 3,
   },
   title: {
     fontSize: 18,
@@ -239,6 +282,12 @@ const styles = createStyle({
     paddingLeft: 15,
     paddingRight: 15,
     paddingBottom: 10,
+  },
+  manualLink: {
+    textAlign: 'center',
+    fontSize: 13,
+    textDecorationLine: 'underline',
+    paddingBottom: 12,
   },
   btns: {
     flexDirection: 'row',
