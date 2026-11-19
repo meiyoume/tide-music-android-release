@@ -1,38 +1,38 @@
 {
-  "version": "1.9.33",
-  "notes": "2026-11-18 · 国内更新源加固：更新改为 manifest 驱动，下载地址全在 version.json 里、以后换源不用发新版；manifest 与 APK 都走多镜像并校验 SHA256；下载失败弹窗新增「打开网页手动下载」兜底。",
+  "version": "1.9.34",
+  "notes": "## 潮汐音乐 1.9.34\n针对「下载超级慢、容易失败、界面难看」这一轮：\n\n- **并发测速择优**：下载前对 GitHub 官方 / ghproxy / gh-proxy 各测一小段，挑最快的通道，不再固定走慢源。\n- **更快失败切换**：某个源校验不过立刻换下一个，超时缩短。\n- **更新说明 Markdown 渲染**：标题 / 加粗 / 列表 / 行内代码都正常显示，不再是一坨裸符号。\n- **下载时折叠长说明 + 真实进度条**，进度一眼可见。\n- 下载中 / 失败都有「打开网页手动下载」兜底。",
   "history": [
     {
+      "version": "1.9.33",
+      "notes": "国内更新源加固：更新改 manifest 驱动（换源只改 json 不用发版），多镜像 + SHA256 校验。"
+    },
+    {
       "version": "1.9.32",
-      "notes": "应用内更新 + 自己的 Release 仓库：「我的 → 关于」显示真实版本并检查更新，可直接下载安装；平板按 applicationId 自动挑 Pad 包。"
+      "notes": "应用内更新 + 自己的 Release 仓库：关于页可检查更新并直接下载安装。"
     },
     {
       "version": "1.9.31",
-      "notes": "冷启动提速：内核初始化拆首屏/后台两段，Web 资源压缩 386→271KB，脚本改 head+defer。同会话 A/B 首帧 2733→1353ms。"
-    },
-    {
-      "version": "1.9.30",
-      "notes": "修复播放页拖动进度条卡顿/延迟：拖拽期间不再被内核进度事件拽回，松手乐观显示 + seekHold 防回弹。"
+      "notes": "冷启动提速：内核初始化拆首屏/后台两段，资源压缩，首帧 2733→1353ms。"
     }
   ],
   "apk": {
     "phone": {
-      "url": "https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-v1.9.33-arm64.apk",
+      "url": "https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.34/TideMusic-v1.9.34-arm64.apk",
       "mirrors": [
-        "https://ghproxy.net/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-v1.9.33-arm64.apk",
-        "https://gh-proxy.com/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-v1.9.33-arm64.apk"
+        "https://ghproxy.net/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.34/TideMusic-v1.9.34-arm64.apk",
+        "https://gh-proxy.com/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.34/TideMusic-v1.9.34-arm64.apk"
       ],
-      "sha256": "c8465dec37b3103c58e179bc57f350b38924854100f19ef3651dd7de42fd8f97",
-      "size": 15010680
+      "sha256": "ea97c551b9a838d1f27c536115f72047b803cd80e727d22e8b916fa3702ba267",
+      "size": 15013557
     },
     "tablet": {
-      "url": "https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-Pad-v1.9.33-arm64.apk",
+      "url": "https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.34/TideMusic-Pad-v1.9.34-arm64.apk",
       "mirrors": [
-        "https://ghproxy.net/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-Pad-v1.9.33-arm64.apk",
-        "https://gh-proxy.com/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.33/TideMusic-Pad-v1.9.33-arm64.apk"
+        "https://ghproxy.net/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.34/TideMusic-Pad-v1.9.34-arm64.apk",
+        "https://gh-proxy.com/https://github.com/meiyoume/tide-music-android-release/releases/download/v1.9.34/TideMusic-Pad-v1.9.34-arm64.apk"
       ],
-      "sha256": "5f12ea3d55a863d954abd3cd5d9346344c81341cf553a2c26e0105fecffc85d2",
-      "size": 15010691
+      "sha256": "c95f317ce6343366da7058a62b1e788401162593e9da9e18f10d09de3ac12ca0",
+      "size": 15013577
     }
   }
 }
