@@ -1910,6 +1910,26 @@ python tools\tide-device.py shot 03-sort-name  # 截图到 shots/dev-*.png
 - 线上 `version.json` 已覆盖成 1.9.35（此前测试期间一度是伪造的 1.9.99，已清掉），
   三个 manifest 源实测都能取到新内容；GitHub API 的资产 `digest` 与 manifest 逐字节一致。
 
+### 关于页「检查失败」的真因：门面白名单漏挂（v1.9.36）
+
+用户装了 1.9.35 后点「关于 → 检查更新」永远「检查失败」。模拟器上复现，logcat 显示
+manifest 7/7 源全部命中（网络没问题）；把 catch 到的 message 临时显示到界面上抓到真因：
+**`Tide.checkUpdate is not a function`** —— `music-ui-mobile/api.js` 把后端方法挂到
+`Tide` 门面时用的是**白名单数组**，`checkUpdate` 从来没加进去。所以从「关于页加检查更新」
+那版（v1.9.32）起这个按钮就一直是坏的；之前看到的更新弹窗都是**启动时自动检查**弹的。
+修法：白名单加 `'checkUpdate'`，展示逻辑改成先判 `r.latest`（否则会显示
+「新版本 v<当前版本>」）。**同类坑：白名单和 app.js 的调用没有静态约束**，以后新增桥命令
+必须两处同时改；`tools/_scan-tide-api.mjs` 这种比对脚本可以临时重写（本轮用完已删）。
+
+顺带把 manifest 拉取从「串行试源」改成**并发抢占**（v1.9.36）：
+- 7 个源（fastly/gcore/cdn jsDelivr + ghproxy/gh-proxy/ghfast + raw 直连）全部并发，
+  单源 8 秒超时（RN fetch 默认**没有**超时，被黑洞的源能挂到系统 TCP 超时）；
+- 收集所有成功响应后取**版本号最高**的一份，防止某个 CDN 缓存旧 manifest；
+- APK 下载镜像新增 `ghfast.top`，仍逐源测速择优 + size/sha256 校验。
+
+设备实测（x86_64 模拟器，真实网络）：同一台机器上 1.9.35 点「检查更新」立即「检查失败」，
+1.9.36 显示「已是最新」。
+
 ### 国内更新源加固 / manifest 驱动（v1.9.33）
 
 用户问「主要国内用 会不会下载很慢」「主要别人也要用啊」，并指了「新闻重构2」
@@ -2371,14 +2391,14 @@ SwiftShader 崩掉**（search 流程不崩=页面没有重型合成层）。把
 
 **当前最新**（v1.9.28 起是**两个包**，手机版 + 平板版，桌面各留一个）：
 
-- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.35.apk`（14.32 MB，
-  SHA256 `FD811F64B77FFAD3B98F3656332644EABFD34D9F0B513D6702A884B59A79353C`，
+- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.36.apk`（14.32 MB，
+  SHA256 `FECA5EAE07A3499691475310BA223BB6A73AB26E03015B2152D51CE2B8383BB1`，
   安装身份 `cn.toside.music.mobile.harmony`，桌面名「潮汐音乐」）
-- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.35.apk`（14.32 MB，
-  SHA256 `A36979086FBA868CF768FD94593D1AC4282A4A741F4D60393C755544463DAE5C`，
+- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.36.apk`（14.32 MB，
+  SHA256 `EEC07884AAB9AEE2A711E567154926D28490CE857BFF55EDB2FC591534BF1EFC`，
   安装身份 `cn.toside.music.mobile.harmony.tablet`，桌面名「潮汐音乐 Pad」）
-- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.35>
-  （资产 `TideMusic-v1.9.35-arm64.apk` / `TideMusic-Pad-v1.9.35-arm64.apk`；
+- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.36>
+  （资产 `TideMusic-v1.9.36-arm64.apk` / `TideMusic-Pad-v1.9.36-arm64.apk`；
   手机装手机包、平板装平板包）
 - 更新 manifest：<https://raw.githubusercontent.com/meiyoume/tide-music-android-release/main/version.json>
 

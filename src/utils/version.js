@@ -32,12 +32,30 @@ const RELEASES_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/re
 export const RELEASE_PAGE = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases`
 
 const RAW_MANIFEST = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/version.json`
-/** manifest 本身的多镜像（照搬新闻重构：国内 raw 直连不稳，先走 ghproxy） */
+/**
+ * manifest 本身的镜像（**全部并发抢**，不是依次试）。
+ *
+ * 2026-11-20 真机「检查失败」事件：手机走 4G 时 raw / ghproxy / gh-proxy / api.github.com
+ * 这一整个 GitHub 系全被挡，三个 manifest 源和 Releases API 回退同时死光。
+ * 原来还是**串行**试，一个被黑洞的源要等 OS 连接超时（可能是分钟级），加上没有
+ * 请求超时，用户看到的就是卡半天然后「检查失败」。
+ *
+ * 现在：jsDelivr（国内一般可达）+ ghproxy 系 + raw 直连一起发，单源 8 秒砍断，
+ * 谁先回不重要 —— 收集完所有成功响应后**取版本号最高的**，这样某个 CDN 缓存
+ * 了旧版也不会把用户按在旧版本上。
+ */
+const JSDELIVR_PATH = `/gh/${REPO_OWNER}/${REPO_NAME}@main/version.json`
 const MANIFEST_URLS = [
+  'https://fastly.jsdelivr.net' + JSDELIVR_PATH,
+  'https://gcore.jsdelivr.net' + JSDELIVR_PATH,
+  'https://cdn.jsdelivr.net' + JSDELIVR_PATH,
   'https://ghproxy.net/' + RAW_MANIFEST,
   'https://gh-proxy.com/' + RAW_MANIFEST,
+  'https://ghfast.top/' + RAW_MANIFEST,
   RAW_MANIFEST,
 ]
+/** manifest / API 单源超时：被墙的源要立刻放弃，不能拖着整个检查 */
+const FETCH_TIMEOUT = 8000
 
 const stripV = version => String(version ?? '').trim().replace(/^v/i, '')
 /** 平板 flavor 的 applicationId 以 `.tablet` 结尾（见 android/app/build.gradle） */
@@ -48,36 +66,62 @@ let manifestCacheAt = 0
 const MANIFEST_TTL = 10 * 60 * 1000
 let releaseCache = null
 
-const fetchJson = async(url, timeout = 15000) => {
-  const res = await fetch(url, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'TideMusic-Android' },
-    // RN 的 fetch 没有 AbortSignal.timeout 的稳定支持，靠原生层超时即可
-  })
-  if (!res.ok) throw new Error('HTTP ' + res.status)
-  return res.json()
+/**
+ * 带超时的 JSON 请求。RN 的 fetch 本身没有默认超时（XHR timeout=0），
+ * 连一个被黑洞的地址能挂到系统 TCP 超时；测速/检查更新都必须自己掐表。
+ */
+const fetchJson = async(url, timeout = FETCH_TIMEOUT) => {
+  const ctrl = typeof AbortController === 'undefined' ? null : new AbortController()
+  const timer = ctrl ? setTimeout(() => { try { ctrl.abort() } catch { /* ignore */ } }, timeout) : null
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'TideMusic-Android' },
+      ...(ctrl ? { signal: ctrl.signal } : {}),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    return await res.json()
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** 版本号比较（1.10.0 > 1.9.99），用于在多个 manifest 响应里挑最新的那份 */
+const cmpVersion = (a, b) => {
+  const pa = stripV(a).split('.').map(n => parseInt(n, 10) || 0)
+  const pb = stripV(b).split('.').map(n => parseInt(n, 10) || 0)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d) return d
+  }
+  return 0
 }
 
 const fetchManifest = async() => {
   if (manifestCache && Date.now() - manifestCacheAt < MANIFEST_TTL) return manifestCache
-  let lastErr = null
   // 破 CDN 缓存：raw / ghproxy 会按路径缓存 version.json，不改 URL 的话
   // 「换源只改 json」发上去后老用户可能几小时都拿不到新内容（真实踩过）。
-  // 拼一个每次不同的查询参数，强制回源。
   const bust = 't=' + Date.now()
-  for (const base of MANIFEST_URLS) {
-    const url = base + (base.includes('?') ? '&' : '?') + bust
+  const urls = MANIFEST_URLS.map(base => base + (base.includes('?') ? '&' : '?') + bust)
+  // 全部并发，单源 8 秒；失败的只记日志，不阻塞任何人
+  const results = await Promise.all(urls.map(async url => {
     try {
-      const data = await fetchJson(url)
-      if (!data || typeof data !== 'object' || !data.version) throw new Error('manifest 格式不对')
-      manifestCache = data
-      manifestCacheAt = Date.now()
-      return data
+      return { url, data: await fetchJson(url) }
     } catch (err) {
-      lastErr = err
       console.log('[update] manifest 源失败：', url, err?.message ?? err)
+      return { url, err }
     }
+  }))
+  const valid = results.filter(r => r.data && typeof r.data === 'object' && r.data.version)
+  if (!valid.length) {
+    throw results.find(r => r.err)?.err ?? new Error('manifest 全部源失败')
   }
-  throw lastErr ?? new Error('manifest 全部源失败')
+  // 取版本号最高的一份：防止某个 CDN 还缓存着旧 manifest
+  valid.sort((a, b) => cmpVersion(b.data.version, a.data.version))
+  console.log('[update] manifest 命中：', valid[0].url, valid[0].data.version, `(${valid.length}/${urls.length} 源可用)`)
+  manifestCache = valid[0].data
+  manifestCacheAt = Date.now()
+  return manifestCache
 }
 
 const fetchReleases = async() => {
