@@ -2446,14 +2446,14 @@ SwiftShader 崩掉**（search 流程不崩=页面没有重型合成层）。把
 
 **当前最新**（v1.9.28 起是**两个包**，手机版 + 平板版，桌面各留一个）：
 
-- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.38.apk`（14.32 MB，
-  SHA256 `84302C423179943FA2CC81D2ECCA8B6425031DFE00AAA3E21310E2C9822B3B6C`，
+- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.39.apk`（14.32 MB，
+  SHA256 `40BC3ECC92B865DC86300DC2DDCF9E99186F265A9A60AE94B0337BE977D42372`，
   安装身份 `cn.toside.music.mobile.harmony`，桌面名「潮汐音乐」）
-- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.38.apk`（14.32 MB，
-  SHA256 `F84E2C9090057FE5F02F83E1ECA36489ACD22A79CA3A7787CD01B211463A0AAE`，
+- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.39.apk`（14.32 MB，
+  SHA256 `C967BC3BDBF0FA880CC71BD7451AF5C9E7D1C93D048DBE7652EF9E283628E5F8`，
   安装身份 `cn.toside.music.mobile.harmony.tablet`，桌面名「潮汐音乐 Pad」）
-- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.38>
-  （资产 `TideMusic-v1.9.38-arm64.apk` / `TideMusic-Pad-v1.9.38-arm64.apk`；
+- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.39>
+  （资产 `TideMusic-v1.9.39-arm64.apk` / `TideMusic-Pad-v1.9.39-arm64.apk`；
   手机装手机包、平板装平板包）
 - 更新 manifest：<https://raw.githubusercontent.com/meiyoume/tide-music-android-release/main/version.json>
 
