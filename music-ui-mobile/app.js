@@ -1477,9 +1477,8 @@ function applyPlayer(p) {
   if (p.position != null) state.position = p.position;
 
   if (songChanged) {
-    /* 换歌了：上一首的 seek 乐观位置作废，别把新歌的进度画成旧目标 */
-    seekHold = 0;
-    seekCaught = false;
+    /* 换歌了：上一首的 seek 预测作废，别把新歌的进度画成旧目标 */
+    seekPredActive = false;
     $('#pTitle').textContent = song.name;
     $('#pArtist').textContent = song.singer + (song.album ? ' · ' + song.album : '');
     $('#miniTitle').textContent = song.name;
@@ -1533,19 +1532,18 @@ function applyProgress(p) {
    里 .bar__fill 那段注释）。写的是 transform 不是 width，重排一帧都不会有。 */
 let progressSig = null;
 
-/* 拖进度条时的两个状态位。
-   seeking：手指按在条上。内核每秒还会推 4 次进度，不把它挡住的话，
-   条子每 250ms 会被「拽回」正在播放的位置一次 —— 用户感觉就是「拖不动 / 一卡一卡」。
-   seekHold/seekHoldUntil：松手后乐观显示目标位置，等内核跟上来；这期间若有
-   「旧位置」的事件在路上（延迟约一帧），不让它把条子拽回去。 */
+/* 拖进度条时的状态位。
+   seeking：手指按在条上，内核推送的进度一律不画（由 paint 接管）。
+   seekPred*：松手后的「预测进度」。不再依赖内核回报 —— 从目标位置按时间自己往前走。
+     原因：真机上 seek 有延迟、还会晚到 100~300ms 的旧进度包、甚至先回退再前进，
+     任何「识别哪些包是旧的」的方案都会漏；干脆在交还前完全不听它的。
+     交还条件：内核位置与预测值差 ≤2.5 秒（真的跟上了），或超过 10 秒（seek 失败兜底）。
+     暂停时预测冻结（state.isPlay 由 player 事件更新）。 */
 let seeking = false;
-let seekHold = 0;
-let seekHoldUntil = 0;
-/* seek 后内核是否已经跟上目标。跟上以后再来的「大倒退」只可能是 seek 前
-   采样的乱序包 —— 真机上实测会晚到 100~300ms，把条子拽回旧位置再弹回来。 */
-let seekCaught = false;
-/* 上一次真正画出去的位置，用来识别乱序倒退 */
-let shownPos = 0;
+let seekPred = 0;
+let seekPredAt = 0;
+let seekPredUntil = 0;
+let seekPredActive = false;
 
 /* 现在哪条进度条是看得见的：'player' / 'mini' / null（都看不见） */
 function progressTarget() {
@@ -1558,32 +1556,23 @@ function progressTarget() {
 function updateProgressUI() {
   /* 手指在条上：位置由 paint() 接管（见下面「进度条拖拽」） */
   if (seeking) return;
-  /* 刚松手 seek 完：内核可能还有一两个「旧位置」事件在路上，
-     别让它们把刚画好的条子拽回去（表现就是松手后又弹一下） */
-  if (seekHold) {
-    /* 单位是**秒**。这里原来写的是 `> 1500` —— 等于 25 分钟，永远不成立，
-       于是松手后第一个「旧位置」进度事件就把条子拽回播放位置，等 seek 生效
-       再跳过去，真机看到的就是「崩回去又崩回来」（2026-11-20 用户报的问题）。
-       v1.9.37 改成 ±1.2s 释放，但真机还有第二种情况：**seek 已经生效后，
-       一个 seek 前采样的旧进度包才到**，此时 hold 已释放，又会被拽回去。
-       现在分两段：没跟上就钉在目标；跟上后再给 5 秒「只许前进」的保护窗，
-       这段里比已显示位置倒退 3 秒以上的事件一律丢弃。 */
+  /* 松手 seek 后的预测窗：条子按目标 + 时间自己走，内核说什么都不听。
+     一旦内核位置与预测对上（≤3 秒），就把基准换成真实位置、继续守着 ——
+     这不是"跟上了就关闭"，而是留成一道**持续跳变过滤**：跟得上的事件照常画，
+     晚到的旧包（差几十秒）被丢掉。10 秒都对不上就放弃（seek 真的失败了）。
+     单曲循环从末尾跳回 0 是合法的，单独放行。 */
+  if (seekPredActive) {
     const now = performance.now();
-    if (!seekCaught) {
-      if (Math.abs(state.position - seekHold) <= 3) {
-        seekCaught = true;
-        seekHoldUntil = now + 5000;   // 跟上后再保护 5 秒，拦乱序包
-      } else if (now < seekHoldUntil) {
-        state.position = seekHold;    // 还没跟上：钉在目标位置
-      } else {
-        seekHold = 0;                 // 8 秒还没跟上（seek 失败/被 clamp），认输
-      }
+    const predicted = seekPred + (state.isPlay ? (now - seekPredAt) / 1000 : 0);
+    const looping = state.duration > 0 && predicted > state.duration - 5 && state.position < 5;
+    if (Math.abs(state.position - predicted) <= 3 || looping) {
+      seekPred = state.position;
+      seekPredAt = now;
+      seekPredUntil = now + 10000;
+    } else if (now > seekPredUntil) {
+      seekPredActive = false;     // 10 秒都没对上：放弃预测，接受真实位置
     } else {
-      /* 已跟上：保护窗内任何「相邻两次事件跳变 >3 秒」都是乱序包（正常播放
-         250ms 最多前进 0.5 秒），前进方向的旧包也要拦 —— 点回更早的位置时，
-         晚到的旧包是比目标更大的值。 */
-      if (Math.abs(state.position - shownPos) > 3) state.position = shownPos;
-      if (now > seekHoldUntil) { seekHold = 0; seekCaught = false; }
+      state.position = Math.max(0, Math.min(predicted, state.duration || predicted));
     }
   }
   const d = state.duration || 1;
@@ -1593,7 +1582,6 @@ function updateProgressUI() {
   /* 把「画哪一条」也算进签名里：播放页开关、迷你条收起/展开之后，
      下一次进度事件会自动重画那条新露出来的，不用在每个入口手动补一次 */
   const sig = pct.toFixed(2) + '\u0001' + cur + '\u0001' + (where || '-');
-  shownPos = state.position;
   if (sig === progressSig) return;
   progressSig = sig;
   if (where === 'player') {
@@ -2902,8 +2890,7 @@ function bind() {
     dragSeq++;
     dragging = true;
     seeking = true;
-    seekHold = 0;
-    seekCaught = false;
+    seekPredActive = false;
     barBox = bar.getBoundingClientRect();   // 只在这里量一次
     bar.classList.add('is-dragging');
     document.documentElement.classList.add('is-seeking');
@@ -2937,15 +2924,13 @@ function bind() {
     }));
     seeking = false;
     if (target > 0) {
-      seekHold = target;
-      seekCaught = false;
-      shownPos = target;
-      /* 串流歌 seek 要重新缓冲，常常超过 1 秒；给 8 秒兜底，内核一跟上就转保护窗 */
-      seekHoldUntil = performance.now() + 8000;
+      seekPred = target;
+      seekPredAt = performance.now();
+      seekPredUntil = seekPredAt + 10000;
+      seekPredActive = true;
       Tide.seek(target).catch(err => {
-        /* seek 直接失败了：放弃乐观位置，立刻回到内核的真实位置 */
-        seekHold = 0;
-        seekCaught = false;
+        /* seek 直接失败了：放弃预测，立刻回到内核的真实位置 */
+        seekPredActive = false;
         progressSig = null;
         updateProgressUI();
         log(err);
