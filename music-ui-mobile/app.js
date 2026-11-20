@@ -1479,6 +1479,7 @@ function applyPlayer(p) {
   if (songChanged) {
     /* 换歌了：上一首的 seek 乐观位置作废，别把新歌的进度画成旧目标 */
     seekHold = 0;
+    seekCaught = false;
     $('#pTitle').textContent = song.name;
     $('#pArtist').textContent = song.singer + (song.album ? ' · ' + song.album : '');
     $('#miniTitle').textContent = song.name;
@@ -1540,6 +1541,11 @@ let progressSig = null;
 let seeking = false;
 let seekHold = 0;
 let seekHoldUntil = 0;
+/* seek 后内核是否已经跟上目标。跟上以后再来的「大倒退」只可能是 seek 前
+   采样的乱序包 —— 真机上实测会晚到 100~300ms，把条子拽回旧位置再弹回来。 */
+let seekCaught = false;
+/* 上一次真正画出去的位置，用来识别乱序倒退 */
+let shownPos = 0;
 
 /* 现在哪条进度条是看得见的：'player' / 'mini' / null（都看不见） */
 function progressTarget() {
@@ -1558,14 +1564,26 @@ function updateProgressUI() {
     /* 单位是**秒**。这里原来写的是 `> 1500` —— 等于 25 分钟，永远不成立，
        于是松手后第一个「旧位置」进度事件就把条子拽回播放位置，等 seek 生效
        再跳过去，真机看到的就是「崩回去又崩回来」（2026-11-20 用户报的问题）。
-       现在：位置进到目标 ±1.2 秒才算内核真的跟上了；没跟上就一直画目标位置，
-       最多等 6 秒（seek 失败时兜底，不让条子永远停在假位置）。 */
-    if (Math.abs(state.position - seekHold) <= 1.2) {
-      seekHold = 0;
-    } else if (performance.now() < seekHoldUntil) {
-      state.position = seekHold;
+       v1.9.37 改成 ±1.2s 释放，但真机还有第二种情况：**seek 已经生效后，
+       一个 seek 前采样的旧进度包才到**，此时 hold 已释放，又会被拽回去。
+       现在分两段：没跟上就钉在目标；跟上后再给 5 秒「只许前进」的保护窗，
+       这段里比已显示位置倒退 3 秒以上的事件一律丢弃。 */
+    const now = performance.now();
+    if (!seekCaught) {
+      if (Math.abs(state.position - seekHold) <= 3) {
+        seekCaught = true;
+        seekHoldUntil = now + 5000;   // 跟上后再保护 5 秒，拦乱序包
+      } else if (now < seekHoldUntil) {
+        state.position = seekHold;    // 还没跟上：钉在目标位置
+      } else {
+        seekHold = 0;                 // 8 秒还没跟上（seek 失败/被 clamp），认输
+      }
     } else {
-      seekHold = 0;
+      /* 已跟上：保护窗内任何「相邻两次事件跳变 >3 秒」都是乱序包（正常播放
+         250ms 最多前进 0.5 秒），前进方向的旧包也要拦 —— 点回更早的位置时，
+         晚到的旧包是比目标更大的值。 */
+      if (Math.abs(state.position - shownPos) > 3) state.position = shownPos;
+      if (now > seekHoldUntil) { seekHold = 0; seekCaught = false; }
     }
   }
   const d = state.duration || 1;
@@ -1575,6 +1593,7 @@ function updateProgressUI() {
   /* 把「画哪一条」也算进签名里：播放页开关、迷你条收起/展开之后，
      下一次进度事件会自动重画那条新露出来的，不用在每个入口手动补一次 */
   const sig = pct.toFixed(2) + '\u0001' + cur + '\u0001' + (where || '-');
+  shownPos = state.position;
   if (sig === progressSig) return;
   progressSig = sig;
   if (where === 'player') {
@@ -2884,6 +2903,7 @@ function bind() {
     dragging = true;
     seeking = true;
     seekHold = 0;
+    seekCaught = false;
     barBox = bar.getBoundingClientRect();   // 只在这里量一次
     bar.classList.add('is-dragging');
     document.documentElement.classList.add('is-seeking');
@@ -2918,11 +2938,14 @@ function bind() {
     seeking = false;
     if (target > 0) {
       seekHold = target;
-      /* 串流歌 seek 要重新缓冲，常常超过 1 秒；给 6 秒兜底，内核一跟上就松开 */
-      seekHoldUntil = performance.now() + 6000;
+      seekCaught = false;
+      shownPos = target;
+      /* 串流歌 seek 要重新缓冲，常常超过 1 秒；给 8 秒兜底，内核一跟上就转保护窗 */
+      seekHoldUntil = performance.now() + 8000;
       Tide.seek(target).catch(err => {
         /* seek 直接失败了：放弃乐观位置，立刻回到内核的真实位置 */
         seekHold = 0;
+        seekCaught = false;
         progressSig = null;
         updateProgressUI();
         log(err);
