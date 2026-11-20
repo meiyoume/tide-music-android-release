@@ -1475,12 +1475,10 @@ function applyPlayer(p) {
   state.liked = !!p.liked;
   if (p.duration) state.duration = p.duration;
   if (p.position != null) state.position = p.position;
-  if (performance.now() < seekWatchUntil) seekTrace('EVT', 'src=player');
 
   if (songChanged) {
     /* 换歌了：上一首的 seek 预测作废，别把新歌的进度画成旧目标 */
     seekPredActive = false;
-    if (performance.now() < seekWatchUntil) seekTrace('RESET', 'song');
     $('#pTitle').textContent = song.name;
     $('#pArtist').textContent = song.singer + (song.album ? ' · ' + song.album : '');
     $('#miniTitle').textContent = song.name;
@@ -1521,7 +1519,6 @@ function applyProgress(p) {
   if (!p) return;
   state.position = p.position || 0;
   if (p.duration) state.duration = p.duration;
-  if (performance.now() < seekWatchUntil) seekTrace('EVT', 'src=progress');
   const durEl = $('#pDur');
   if (durEl && state.duration) durEl.textContent = fmt(state.duration);
   updateProgressUI();
@@ -1548,44 +1545,6 @@ let seekPredAt = 0;
 let seekPredUntil = 0;
 let seekPredActive = false;
 
-/* ── 临时诊断（1.9.40-diag，仅测试版）：把 seek 前后的进度事件序列画在屏幕上 ── */
-let seekWatchUntil = 0;
-let seekT0 = 0;
-let seekDiagTimer = 0;
-const seekLog = [];
-function seekTrace(tag, info) {
-  const now = performance.now();
-  const predicted = seekPredActive ? seekPred + (state.isPlay ? (now - seekPredAt) / 1000 : 0) : 0;
-  if (!seekT0) seekT0 = now;
-  seekLog.push({
-    t: Math.round(now - seekT0),
-    tag,
-    pos: +(state.position || 0).toFixed(1),
-    dur: +(state.duration || 0).toFixed(1),
-    play: state.isPlay ? 1 : 0,
-    on: seekPredActive ? 1 : 0,
-    pred: +predicted.toFixed(1),
-    info: info || '',
-  });
-  if (seekLog.length > 40) seekLog.shift();
-  renderSeekDiag();
-}
-function renderSeekDiag() {
-  let el = document.getElementById('seekDiag');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'seekDiag';
-    el.style.cssText = 'position:fixed;left:6px;right:6px;top:96px;z-index:99999;background:rgba(0,0,0,.84);color:#7f7;font:10px/1.35 monospace;padding:6px 8px;border-radius:8px;white-space:pre;pointer-events:none;max-height:46vh;overflow:hidden';
-    document.body.appendChild(el);
-  }
-  el.textContent = seekLog.slice(-12).map(r =>
-    `+${r.t} ${r.tag} pos=${r.pos} dur=${r.dur} play=${r.play} on=${r.on} pred=${r.pred} ${r.info}`,
-  ).join('\n');
-  el.style.display = 'block';
-  clearTimeout(seekDiagTimer);
-  seekDiagTimer = setTimeout(() => { el.style.display = 'none' }, 15000);
-}
-
 /* 现在哪条进度条是看得见的：'player' / 'mini' / null（都看不见） */
 function progressTarget() {
   if ($('#player').classList.contains('is-open')) return 'player';
@@ -1610,13 +1569,10 @@ function updateProgressUI() {
       seekPred = state.position;
       seekPredAt = now;
       seekPredUntil = now + 10000;
-      seekTrace('TAKE', looping ? 'loop' : '');
     } else if (now > seekPredUntil) {
       seekPredActive = false;     // 10 秒都没对上：放弃预测，接受真实位置
-      seekTrace('TIMEOUT');
     } else {
       state.position = Math.max(0, Math.min(predicted, state.duration || predicted));
-      seekTrace('DROP');
     }
   }
   const d = state.duration || 1;
@@ -2972,10 +2928,6 @@ function bind() {
       seekPredAt = performance.now();
       seekPredUntil = seekPredAt + 10000;
       seekPredActive = true;
-      seekLog.length = 0;
-      seekT0 = 0;
-      seekWatchUntil = performance.now() + 20000;
-      seekTrace('SEEK', 'target=' + target.toFixed(1));
       Tide.seek(target).catch(err => {
         /* seek 直接失败了：放弃预测，立刻回到内核的真实位置 */
         seekPredActive = false;

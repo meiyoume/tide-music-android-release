@@ -1973,6 +1973,30 @@ v1.9.39 换思路：**seek 后干脆不听内核的进度**，从目标位置按
 15 秒后自动隐藏。让用户点一次条子截图，拿到真实序列再定修复方案。
 **诊断代码是临时的，不要带进正式版**（拿到数据后删掉 trace 插桩再发）。
 
+真机截图回来了（用户 1.9.40 实测），序列一眼可读：
+
+```
++36  TAKE pos=206.8 dur=299.3 play=0 on=1 pred=206.8
++48  EVT  pos=121.8 dur=299.3 play=1 on=1 pred=206.8
++48  DROP pos=206.8 ...
++48  TAKE pos=206.8 ...
++1057 EVT pos=207.6 ...  TAKE
++2055 EVT pos=208.6 ...  TAKE
++3069 EVT pos=209.6 ...  TAKE
+```
+
+即：真正的旧包在**松手后 48ms** 到达（点的是 206.8s，推上来的是 121.8s），被预测窗
+`DROP` 掉；之后每 ~1 秒一条、位置严格 +1s/s，没有第二个旧包。用户确认进度条已不再回弹。
+这解释了为什么模拟器 mock 复现不了 —— mock 里的乱序包晚 100~300ms，而真机是 48ms 且
+只此一条；也说明 1.9.37/1.9.38 的「识别旧包」思路必然漏：**过滤依据必须是「和预测位置
+差多少」而不是「第几个包 / 过了多久」**。
+
+#### v1.9.41：删掉诊断、保留预测过滤（正式版）
+
+`seekTrace/renderSeekDiag/seekLog/seekWatchUntil/seekT0/seekDiagTimer` 及五处调用全部删除，
+`updateProgressUI()` 的预测/跳变过滤逻辑逐字保留（与 1.9.40 运行时行为一致，只是不再画面板）。
+构建前 grep `seekDiag|seekTrace` 在源码和 `assets/tide/app.js` 均为 0 命中。
+
 
 ### 关于页「检查失败」的真因：门面白名单漏挂（v1.9.36）
 
@@ -2458,14 +2482,14 @@ SwiftShader 崩掉**（search 流程不崩=页面没有重型合成层）。把
 
 **当前最新**（v1.9.28 起是**两个包**，手机版 + 平板版，桌面各留一个）：
 
-- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.39.apk`（14.32 MB，
-  SHA256 `40BC3ECC92B865DC86300DC2DDCF9E99186F265A9A60AE94B0337BE977D42372`，
+- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.41.apk`（14.32 MB，
+  SHA256 `BC690E642B87DB5CBBB98077D89EE31AA660350806E421E3504BC9E1F32AC2DD`，
   安装身份 `cn.toside.music.mobile.harmony`，桌面名「潮汐音乐」）
-- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.39.apk`（14.32 MB，
-  SHA256 `C967BC3BDBF0FA880CC71BD7451AF5C9E7D1C93D048DBE7652EF9E283628E5F8`，
+- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.41.apk`（14.32 MB，
+  SHA256 `5C80C43A0DC469EDB5C3774180EEDA6FADB9B7A1328CE683479A8E040F4B4DDD`，
   安装身份 `cn.toside.music.mobile.harmony.tablet`，桌面名「潮汐音乐 Pad」）
-- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.39>
-  （资产 `TideMusic-v1.9.39-arm64.apk` / `TideMusic-Pad-v1.9.39-arm64.apk`；
+- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.41>
+  （资产 `TideMusic-v1.9.41-arm64.apk` / `TideMusic-Pad-v1.9.41-arm64.apk`；
   手机装手机包、平板装平板包）
 - 更新 manifest：<https://raw.githubusercontent.com/meiyoume/tide-music-android-release/main/version.json>
 
