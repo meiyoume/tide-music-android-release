@@ -1912,6 +1912,27 @@ python tools\tide-device.py shot 03-sort-name  # 截图到 shots/dev-*.png
 - 线上 `version.json` 已覆盖成 1.9.35（此前测试期间一度是伪造的 1.9.99，已清掉），
   三个 manifest 源实测都能取到新内容；GitHub API 的资产 `digest` 与 manifest 逐字节一致。
 
+### 进度条「崩回去又崩回来」：hold 判据把秒当毫秒（v1.9.37）
+
+用户：「点到一个点 那个条会崩回去然后再崩回来 很不协调」。真因：`state.position` 的单位是
+**秒**，而 `updateProgressUI` 的防回弹判断写的是
+`Math.abs(state.position - seekHold) > 1500` —— 1500 秒 = 25 分钟，对任何一首歌都永远
+不成立。于是松手后第一个「旧位置」进度事件（≤250ms 后）就把条子拽回去，还顺手清掉了
+hold；等 seek 真正生效再弹回来。v1.9.30 那一轮是把「毫秒」的直觉写进了「秒」的世界，
+看起来像防回弹，实际从没生效过。
+
+修法（`music-ui-mobile/app.js`）：
+- 容差改成 **1.2 秒**，并改成「等内核真的跟上」：位置进到目标 ±1.2s 才释放 hold；
+  没跟上就一直画目标位置，最多 **6 秒**兜底（seek 失败时不至于永远停在假位置）。
+- `Tide.seek` reject 时立刻释放 hold、回到真实位置。
+- 换歌清 hold，避免把新歌画成上一首的目标。
+- 摘 `is-dragging` 延后两帧：快速点击时 pointerdown/up 可能落在同一帧，当场摘掉
+  transition 会让浏览器从旧位置补一段 .28s 过渡（看着慢半拍）。
+
+**量具**（headless Edge + CDP；mock 后端加 `?slowseek=1` 模拟串流 seek 的 1.2s 延迟）：
+每 40ms 采 `#pFill` 的 computed scaleX。旧逻辑 `0.75 →(900ms)→ 0.008 →(1200ms)→ 0.75`；
+新逻辑全程 `0.750 → 0.756`（只有正常播放的前进）。A/B 各跑一遍同一段点击。
+
 ### 关于页「检查失败」的真因：门面白名单漏挂（v1.9.36）
 
 用户装了 1.9.35 后点「关于 → 检查更新」永远「检查失败」。模拟器上复现，logcat 显示
@@ -2396,14 +2417,14 @@ SwiftShader 崩掉**（search 流程不崩=页面没有重型合成层）。把
 
 **当前最新**（v1.9.28 起是**两个包**，手机版 + 平板版，桌面各留一个）：
 
-- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.36.apk`（14.32 MB，
-  SHA256 `FECA5EAE07A3499691475310BA223BB6A73AB26E03015B2152D51CE2B8383BB1`，
+- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.37.apk`（14.32 MB，
+  SHA256 `CF5FD581C81FB7DA8E792962C5E16A3923DA967C6E52C20DF9FE7F9EA7C93075`，
   安装身份 `cn.toside.music.mobile.harmony`，桌面名「潮汐音乐」）
-- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.36.apk`（14.32 MB，
-  SHA256 `EEC07884AAB9AEE2A711E567154926D28490CE857BFF55EDB2FC591534BF1EFC`，
+- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.37.apk`（14.32 MB，
+  SHA256 `0F7CFE4D5706BDA4B1311729896D275F9EDA5A5C1BD3B367671C64C0F259B978`，
   安装身份 `cn.toside.music.mobile.harmony.tablet`，桌面名「潮汐音乐 Pad」）
-- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.36>
-  （资产 `TideMusic-v1.9.36-arm64.apk` / `TideMusic-Pad-v1.9.36-arm64.apk`；
+- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.37>
+  （资产 `TideMusic-v1.9.37-arm64.apk` / `TideMusic-Pad-v1.9.37-arm64.apk`；
   手机装手机包、平板装平板包）
 - 更新 manifest：<https://raw.githubusercontent.com/meiyoume/tide-music-android-release/main/version.json>
 

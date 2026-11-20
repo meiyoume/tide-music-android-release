@@ -1477,6 +1477,8 @@ function applyPlayer(p) {
   if (p.position != null) state.position = p.position;
 
   if (songChanged) {
+    /* 换歌了：上一首的 seek 乐观位置作废，别把新歌的进度画成旧目标 */
+    seekHold = 0;
     $('#pTitle').textContent = song.name;
     $('#pArtist').textContent = song.singer + (song.album ? ' · ' + song.album : '');
     $('#miniTitle').textContent = song.name;
@@ -1553,7 +1555,14 @@ function updateProgressUI() {
   /* 刚松手 seek 完：内核可能还有一两个「旧位置」事件在路上，
      别让它们把刚画好的条子拽回去（表现就是松手后又弹一下） */
   if (seekHold) {
-    if (performance.now() < seekHoldUntil && Math.abs(state.position - seekHold) > 1500) {
+    /* 单位是**秒**。这里原来写的是 `> 1500` —— 等于 25 分钟，永远不成立，
+       于是松手后第一个「旧位置」进度事件就把条子拽回播放位置，等 seek 生效
+       再跳过去，真机看到的就是「崩回去又崩回来」（2026-11-20 用户报的问题）。
+       现在：位置进到目标 ±1.2 秒才算内核真的跟上了；没跟上就一直画目标位置，
+       最多等 6 秒（seek 失败时兜底，不让条子永远停在假位置）。 */
+    if (Math.abs(state.position - seekHold) <= 1.2) {
+      seekHold = 0;
+    } else if (performance.now() < seekHoldUntil) {
       state.position = seekHold;
     } else {
       seekHold = 0;
@@ -2849,6 +2858,7 @@ function bind() {
   let seekRatio = 0;
   let barBox = null;
   let rafId = 0;
+  let dragSeq = 0;
 
   function ratioFrom(e) {
     if (!barBox) barBox = bar.getBoundingClientRect();
@@ -2870,6 +2880,7 @@ function bind() {
 
   bar.addEventListener('pointerdown', e => {
     if (!(state.duration > 0)) return;      // 时长还没到手，拖了也没意义
+    dragSeq++;
     dragging = true;
     seeking = true;
     seekHold = 0;
@@ -2895,13 +2906,27 @@ function bind() {
     /* 先乐观画定（还带着 is-dragging，没有过渡），再摘类、再去 seek */
     state.position = target;
     paintBar();
-    bar.classList.remove('is-dragging');
-    document.documentElement.classList.remove('is-seeking');
+    /* 延后两帧再摘类：快速点一下时 pointerdown/up 可能落在同一帧，
+       当场摘掉 transition 会让浏览器从旧位置补一段 .28s 过渡（看着慢半拍）。
+       先保证目标位置在「无过渡」状态下真的画出来，再恢复过渡。 */
+    const seq = dragSeq;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (dragging || seq !== dragSeq) return;
+      bar.classList.remove('is-dragging');
+      document.documentElement.classList.remove('is-seeking');
+    }));
     seeking = false;
     if (target > 0) {
       seekHold = target;
-      seekHoldUntil = performance.now() + 900;
-      Tide.seek(target).catch(log);
+      /* 串流歌 seek 要重新缓冲，常常超过 1 秒；给 6 秒兜底，内核一跟上就松开 */
+      seekHoldUntil = performance.now() + 6000;
+      Tide.seek(target).catch(err => {
+        /* seek 直接失败了：放弃乐观位置，立刻回到内核的真实位置 */
+        seekHold = 0;
+        progressSig = null;
+        updateProgressUI();
+        log(err);
+      });
     }
     progressSig = null;
     syncLyric();
