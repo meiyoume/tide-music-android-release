@@ -108,11 +108,15 @@ const VersionModal = ({ componentId }: { componentId: string }) => {
       switch (versionInfo.status) {
         case 'downloading':
           setTitle(t('version_title_new'))
-          setTip(t('version_btn_downloading', {
-            total: sizeFormate(progress.total),
-            current: sizeFormate(progress.current),
-            progress: progress.total ? (progress.current / progress.total * 100).toFixed(2) : '0',
-          }))
+          /* 还没收到第一个字节：测速/连接各镜像要几秒，这时显示「正在连接下载源」。
+             以前这里直接写 0 B/0 B (0%)，用户以为点了没反应（真机反馈）。 */
+          setTip(progress.current
+            ? t('version_btn_downloading', {
+                total: sizeFormate(progress.total),
+                current: sizeFormate(progress.current),
+                progress: progress.total ? (progress.current / progress.total * 100).toFixed(2) : '0',
+              })
+            : t('version_tip_connecting'))
           if (ignoreBtnConfig.show) ignoreBtnConfig.show = false
           if (!confirmBtn.disabled) setConfirmBtn({ text: t('version_btn_update'), show: true, disabled: true })
           setCloseBtnText(t('version_btn_min'))

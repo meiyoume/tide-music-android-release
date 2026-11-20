@@ -232,15 +232,39 @@ const probeSpeed = (url, probeBytes = 300 * 1024, probeMs = 5000, index = 0) => 
 
 /** 下载单个源，落盘后校验 size + sha256 */
 const downloadOne = (url, savePath, expected, onDownload) => new Promise((resolve, reject) => {
-  const { jobId, promise } = downloadFile(url, savePath, {
-    progressInterval: 500,
-    connectionTimeout: 10000,
-    readTimeout: 20000,
-    begin({ contentLength }) { onDownload(contentLength, 0) },
-    progress({ contentLength, bytesWritten }) { onDownload(contentLength, bytesWritten) },
-  })
+  /* 停滞看门狗：某个镜像连上了却几乎不走字节（实测 gh-proxy 会掉到 5KB/s），
+     与其让用户盯着 0% 等十几分钟，不如 15 秒没进展就掐掉换下一个源。 */
+  let lastAt = Date.now()
+  let jobId = null
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastAt < 15000) return
+    clearInterval(watchdog)
+    console.log('[update] 15 秒无进展，换源：', url.slice(0, 60))
+    try { if (jobId != null) stopDownload(jobId) } catch { /* ignore */ }
+  }, 3000)
+  let dl
+  try {
+    dl = downloadFile(url, savePath, {
+      progressInterval: 500,
+      connectionTimeout: 10000,
+      readTimeout: 20000,
+      begin({ contentLength }) {
+        lastAt = Date.now()
+        onDownload(contentLength, 0)
+      },
+      progress({ contentLength, bytesWritten }) {
+        lastAt = Date.now()
+        onDownload(contentLength, bytesWritten)
+      },
+    })
+  } catch (err) {
+    clearInterval(watchdog)
+    reject(err)
+    return
+  }
+  jobId = dl.jobId
   downloadJobId = jobId
-  promise.then(async() => {
+  dl.promise.then(async() => {
     const st = await stat(savePath)
     if (!st?.isFile || !st.size) throw new Error('下载文件为空')
     if (expected.size && st.size !== expected.size) {
@@ -253,7 +277,7 @@ const downloadOne = (url, savePath, expected, onDownload) => new Promise((resolv
       }
     }
     resolve()
-  }).catch(reject)
+  }).catch(reject).finally(() => { clearInterval(watchdog) })
 })
 
 let downloadJobId = null
@@ -278,11 +302,13 @@ export const downloadNewVersion = async(version, onDownload = noop) => {
   const urls = buildCandidateUrls(apkConfig, target, wantPad)
   const savePath = temporaryDirectoryPath + (wantPad ? '/tide-music-pad.apk' : '/tide-music.apk')
 
-  // 测速择优：并发给每个源下一个 300KB 探针，按速度从快到慢排。
+  // 测速择优：并发给每个源下一个 128KB 探针，按速度从快到慢排。
   // 只有一个源就别浪费时间探；某个源探测返回 0 速度（不可达）会排到最后。
+  // 为什么是 2.5 秒：探针只是给源排序，5 秒会让「点更新后到第一字节」多等一倍，
+  // 真机反馈这段时间看着像没反应（1.9.42）。
   let ordered = urls
   if (urls.length > 1) {
-    const scored = await Promise.all(urls.map(async(url, index) => ({ url, speed: await probeSpeed(url, 300 * 1024, 5000, index) })))
+    const scored = await Promise.all(urls.map(async(url, index) => ({ url, speed: await probeSpeed(url, 128 * 1024, 2500, index) })))
     ordered = scored.sort((a, b) => b.speed - a.speed).map(x => x.url)
     console.log('[update] 源测速：', scored.map(x => `${x.speed ? Math.round(x.speed / 1024) + 'KB/s' : '不可达'} ${x.url.slice(0, 60)}`).join(' | '))
   }

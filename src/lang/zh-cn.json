@@ -502,6 +502,7 @@
   "user_api_update_alert_open_url": "打开更新地址",
   "version_btn_close": "关闭",
   "version_btn_downloading": "正在努力下载中... {current}/{total} ({progress}%)",
+  "version_tip_connecting": "正在连接下载源，请稍候（约 3~10 秒）...",
   "version_btn_failed": "重试",
   "version_btn_ignore": "忽略",
   "version_btn_ignore_cancel": "取消忽略",

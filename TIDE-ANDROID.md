@@ -1997,6 +1997,33 @@ v1.9.39 换思路：**seek 后干脆不听内核的进度**，从目标位置按
 `updateProgressUI()` 的预测/跳变过滤逻辑逐字保留（与 1.9.40 运行时行为一致，只是不再画面板）。
 构建前 grep `seekDiag|seekTrace` 在源码和 `assets/tide/app.js` 均为 0 命中。
 
+#### v1.9.42：更新弹窗「点了没反应」——其实是测速期 0 B
+
+用户报「发现新版本，点了后没反应、不会下载」。x86_64 模拟器上原样复现（安装 1.9.40，
+启动自动检查弹窗，点「更新」）：弹窗切到 `正在努力下载中... 0 B/0 B (0%)` 卡住不动。
+logcat 拿到真因链：
+
+```
+[update] manifest 命中：gh-proxy.com ... 1.9.41 (3/7 源可用)
+[update] 源测速：88KB/s gh-proxy | 不可达 github 官方 | 不可达 ghproxy.net | 不可达 ghfast.top
+```
+
+- 点更新后先**并发测速 4 个源**（300KB/5 秒，`Promise.all` 等最慢的），这 5 秒里
+  `progress` 还是 0，弹窗显示 `0 B/0 B`，看起来像死掉；
+- 之后从 gh-proxy 开始下，但这条线路实测会从 88KB/s 掉到 5KB/s（14MB 要十几分钟甚至更久），
+  期间字节几乎不涨，用户自然判定「不会下载」。
+
+改了三处（不碰下载协议）：
+1. `VersionModal` 在 `progress.current === 0` 时显示 `version_tip_connecting`
+   （「正在连接下载源，请稍候（约 3~10 秒）...」），不再显示 0 B/0 B；三种语言都加了 key。
+2. 测速探针 300KB/5s → **128KB/2.5s**，第一字节来得更早、也少耗用户流量。
+3. `downloadOne` 加停滞看门狗：3 秒查一次，**15 秒字节没涨**就 `stopDownload` 换下一个源
+   （以前只靠 readTimeout 20s，掉到 5KB/s 的"假活"连接永远不会触发）。
+
+模拟器实测：点更新后先显示"正在连接下载源"，约 10 秒后出现 `3.61 MiB/14.32 MiB (25.20%)`。
+**注意：这条改的是"更新器自己的体验"，用户手上那一版仍会用旧逻辑下载新包** ——
+先用电脑/浏览器手动装上新版，以后更新才会舒服。
+
 
 ### 关于页「检查失败」的真因：门面白名单漏挂（v1.9.36）
 
@@ -2482,14 +2509,14 @@ SwiftShader 崩掉**（search 流程不崩=页面没有重型合成层）。把
 
 **当前最新**（v1.9.28 起是**两个包**，手机版 + 平板版，桌面各留一个）：
 
-- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.41.apk`（14.32 MB，
-  SHA256 `BC690E642B87DB5CBBB98077D89EE31AA660350806E421E3504BC9E1F32AC2DD`，
+- 手机：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-手机版-1.9.42.apk`（14.32 MB，
+  SHA256 `055B8B511204774EF86FA0E11A0645E48CEB3CC5E5DEE73575FCC61518D587ED`，
   安装身份 `cn.toside.music.mobile.harmony`，桌面名「潮汐音乐」）
-- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.41.apk`（14.32 MB，
-  SHA256 `5C80C43A0DC469EDB5C3774180EEDA6FADB9B7A1328CE683479A8E040F4B4DDD`，
+- 平板：`C:\Users\meiyou\Desktop\ai做的安装包\潮汐音乐-平板版-1.9.42.apk`（14.32 MB，
+  SHA256 `F890D08E24F492B1AB1A5768C21CE806FE6133D9FC8464A5BB29A3A4F9D1FA62`，
   安装身份 `cn.toside.music.mobile.harmony.tablet`，桌面名「潮汐音乐 Pad」）
-- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.41>
-  （资产 `TideMusic-v1.9.41-arm64.apk` / `TideMusic-Pad-v1.9.41-arm64.apk`；
+- Release：<https://github.com/meiyoume/tide-music-android-release/releases/tag/v1.9.42>
+  （资产 `TideMusic-v1.9.42-arm64.apk` / `TideMusic-Pad-v1.9.42-arm64.apk`；
   手机装手机包、平板装平板包）
 - 更新 manifest：<https://raw.githubusercontent.com/meiyoume/tide-music-android-release/main/version.json>
 
