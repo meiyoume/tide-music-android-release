@@ -234,3 +234,15 @@ dependencies {
 }
 
 apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)
+
+/**
+ * 版本号写在 package.json 里（src/store/version/state.ts 直接 import 它），但 RN 的
+ * createBundle*JsAndAssets 任务**不把 package.json 当成输入**：只改 version 再打包会
+ * 复用上一次的 JS bundle，APK 里 process.versions.app 还是旧版本 —— 应用会永远提示
+ * 「发现新版本」，而那个新版本就是它自己（实测 1.9.41 的 APK 里 bundle 还写着 1.9.39）。
+ * 把 package.json 显式声明成 bundle 任务的输入，版本一变就重新打包。
+ */
+tasks.matching { it.name.startsWith('createBundle') && it.name.endsWith('JsAndAssets') }.configureEach { t ->
+    t.inputs.file(file("../../package.json"))
+}
+

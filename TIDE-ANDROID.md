@@ -2024,6 +2024,18 @@ logcat 拿到真因链：
 **注意：这条改的是"更新器自己的体验"，用户手上那一版仍会用旧逻辑下载新包** ——
 先用电脑/浏览器手动装上新版，以后更新才会舒服。
 
+##### 顺带挖出的构建坑：JS bundle 里的 version 会落后于 APK
+
+为了复现更新弹窗，打了个 versionName=1.9.41 的 x86_64 包，结果它启动后认为自己是
+**1.9.42**（弹窗直接不出现）。查 bundle 才发现：`src/store/version/state.ts` 里
+`import { version } from '../../../package.json'` 是**打包时**写进 JS 的，而 RN 的
+`createBundle*JsAndAssets` 任务**不把 package.json 当输入**，只改 version 再打包会复用
+上一次的 bundle。实测已发布的 1.9.41 APK 里 bundle 还写着 **1.9.39** —— 也就是用户装了
+1.9.41 后「关于」显示 1.9.39，然后永远被提示更新到 1.9.41（它自己）。
+修法：`android/app/build.gradle` 末尾把 `../../package.json` 显式加进 bundle 任务的
+inputs（改完实测 1.9.41 包内 bundle 立刻变成 1.9.41）。**以后每次发版，打完包都该
+解出 `assets/index.android.bundle` 搜一遍版本号**，像本次 1.9.42 就核对过是 1.9.42。
+
 
 ### 关于页「检查失败」的真因：门面白名单漏挂（v1.9.36）
 
